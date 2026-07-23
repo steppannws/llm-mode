@@ -25,3 +25,11 @@ EOF
   [ "$status" -eq 1 ]
   [[ "$output" == *"no state file"* ]]
 }
+
+@test "off --dry-run includes state file removal" {
+  cat > "$LLM_MODE_DIR/state.json" <<'EOF'
+{"apps": [], "agents": [], "wired_limit_prev": "0", "forced_kills": []}
+EOF
+  run llm-mode off --dry-run
+  [[ "$output" == *"rm -f"* ]]
+}

@@ -163,6 +163,7 @@ cmd_off() {
       run open -b "$bid" || true
     done < <(state_get apps)
   fi
+  run rm -f "$STATE_FILE"
   log "off: done"
   echo "restored. reboot fully resets any stubborn daemons."
 }
