@@ -31,7 +31,10 @@ This must be run manually (it prompts for your sudo password). It:
 - installs `/etc/sudoers.d/llm-mode`, a `NOPASSWD` grant scoped to exactly:
   `sysctl iogpu.wired_limit_mb=*`, `mdutil -a -i off`, `mdutil -a -i on`,
   `tmutil disable`, `tmutil enable` — nothing else, so `on`/`off` can run
-  non-interactively (including over SSH)
+  non-interactively (including over SSH). The grant is written to a temp file
+  and validated with `visudo -c -f` before it's ever installed into
+  `/etc/sudoers.d/`, so a malformed line can't take effect on the live sudo
+  policy.
 - enables Remote Login (`systemsetup -setremotelogin on`) so the client Mac can SSH in
 
 Use `./install.sh --dry-run` to preview the commands without executing them.
@@ -42,23 +45,38 @@ Use `./install.sh --dry-run` to preview the commands without executing them.
 llm-mode {on|off|status|serve-stop} [--dry-run] [--relaunch]
 ```
 
-- **`on`** — snapshots running GUI apps and enabled launch agents to
-  `~/.llm-mode/state.json`, quits GUI apps (force-kills stragglers after 10s),
-  disables non-whitelisted launch agents, pauses Spotlight (`mdutil`) and Time
-  Machine (`tmutil`), raises `iogpu.wired_limit_mb`, then starts the LM Studio
-  server and loads the configured model. Prints free RAM before/after and an
-  API health check. If `state.json` already exists, `on` **never overwrites
-  it** — run `off` first to restore, then `on` again.
-- **`off`** — reverses everything from `state.json`: stops the LM Studio
-  server, restores the previous `iogpu.wired_limit_mb`, re-enables and
-  restarts launch agents, re-enables Spotlight/Time Machine, and (with
-  `--relaunch`) reopens the apps that were quit. Deletes `state.json` on
-  success.
+- **`on`** — snapshots running GUI apps and enabled, user-installed launch
+  agents to `~/.llm-mode/state.json`, quits GUI apps that are actually running
+  (force-kills stragglers after 10s), disables those non-whitelisted launch
+  agents, pauses Spotlight (`mdutil`) and Time Machine (`tmutil`), raises
+  `iogpu.wired_limit_mb`, then starts the LM Studio server and loads the
+  configured model. Prints free RAM before/after and an API health check. Only
+  user-installed agents (ones with a plist under `~/Library/LaunchAgents`) are
+  disabled — they're the only ones `off` can reliably restore; system/Apple
+  GUI agents are left alone (`pause_services` separately handles `bird`,
+  `cloudd`, `photoanalysisd`). If `state.json` already exists, `on` **never
+  overwrites real state** — run `off` first to restore, then `on` again. The
+  one exception: a state file written by a previous `on --dry-run` (tagged
+  `"dry_run": true`) is not real state, so a real `on` replaces it with a
+  fresh snapshot instead of treating it as something to protect.
+- **`off`** — reverses everything from `state.json` on a best-effort basis:
+  stops the LM Studio server, restores the previous `iogpu.wired_limit_mb`,
+  re-enables and restarts launch agents, re-enables Spotlight/Time Machine,
+  and (with `--relaunch`) reopens the apps that were quit. Deletes
+  `state.json` on success. Every restore step is independent — if one fails
+  (e.g. a `sudo` prompt can't be answered because there's no TTY, such as when
+  triggered from the menu bar app), it's logged and `off` continues with the
+  rest rather than aborting halfway. Prints `restored.` when everything
+  succeeded, or `restored with N failed steps (see log)` otherwise.
 - **`status`** — prints configured model, port, wired memory limit, whether
   the server responds, LAN hostname, and current free RAM.
 - **`serve-stop`** — stops just the LM Studio server, without touching
   anything else.
-- `--dry-run` — logs and prints every action instead of executing it.
+- `--dry-run` — prints every action instead of executing it. It still writes
+  a provisional `state.json` (tagged `"dry_run": true`) so the dry-run output
+  reflects what a real `on` would snapshot; that provisional file is replaced
+  outright by the next real `on`, so it never blocks or gets mistaken for
+  real state to restore.
 
 **Restore guarantee:** `state.json` is written before anything is changed, so
 `off` can always restore even if the CLI was interrupted mid-`on`. A full
@@ -71,6 +89,12 @@ state file contents.
 `notifyd`, `cfprefsd`, `systemstats`, `powerd`, `configd`, `distnoted`,
 `com.apple.Finder`, LM Studio (`LM Studio`/`lmstudio`/`lms`), and
 `Terminal`/`iTerm` (so the invoking shell/SSH session survives).
+
+**Run it from a whitelisted terminal.** Invoke `llm-mode` from Terminal.app,
+iTerm2, or over an SSH session — those are the only terminal apps in the
+whitelist. Other terminal apps (VS Code's integrated terminal, Warp, kitty,
+etc.) are **not** whitelisted and will be quit like any other GUI app when you
+run `on`.
 
 ### Configuration
 
