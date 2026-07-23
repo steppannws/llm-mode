@@ -1,0 +1,12 @@
+name: LLMMode
+options: { bundleIdPrefix: dev.stepan }
+targets:
+  LLMMode:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources: [LLMMode]
+    info:
+      path: LLMMode/Info.plist
+      properties:
+        LSUIElement: true   # menu bar only, no Dock icon
