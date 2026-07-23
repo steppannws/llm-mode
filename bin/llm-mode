@@ -114,6 +114,17 @@ apply_sysctl() {
   run sudo sysctl "iogpu.wired_limit_mb=$CFG_WIRED_MB"
 }
 
+server_start() {
+  run lms server start --port "$CFG_PORT"
+  run lms load "$CFG_MODEL"
+}
+
+server_stop() { run lms server stop; }
+
+server_health() {
+  curl -sf -m 2 "http://localhost:$CFG_PORT/v1/models" >/dev/null 2>&1
+}
+
 cmd_on() {
   log "on: start"
   local before; before=$(vm_stat | awk '/Pages free/ {print $3*16384/1048576 "MB"}')
@@ -124,6 +135,11 @@ cmd_on() {
   apply_sysctl
   local after; after=$(vm_stat | awk '/Pages free/ {print $3*16384/1048576 "MB"}')
   echo "free RAM before: $before  after: $after"
+  server_start
+  if [[ $DRY_RUN -eq 0 ]]; then
+    for _ in $(seq 1 30); do server_health && break; sleep 2; done
+    server_health && echo "API ready on localhost:$CFG_PORT" || echo "WARNING: API not responding"
+  fi
   log "on: done"
 }
 cmd_off()       { log "off: start"; run true; log "off: done"; }
@@ -131,8 +147,11 @@ cmd_status() {
   echo "model: $CFG_MODEL"
   echo "port: $CFG_PORT"
   echo "wired_limit_mb: $CFG_WIRED_MB"
+  if server_health; then echo "server: up"; else echo "server: down"; fi
+  echo "host: $(scutil --get LocalHostName 2>/dev/null || hostname).local"
+  vm_stat | awk '/Pages free/ {printf "free RAM: %.0fMB\n", $3*16384/1048576}'
 }
-cmd_serve_stop(){ echo "llm-mode: serve-stop not implemented yet"; }
+cmd_serve_stop() { server_stop; }
 
 [[ $# -ge 1 ]] || usage
 SUBCMD="$1"; shift
