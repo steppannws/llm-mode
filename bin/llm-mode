@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# bin/llm-mode — free RAM, run LM Studio server, restore on demand.
+set -euo pipefail
+
+STATE_DIR="${LLM_MODE_DIR:-$HOME/.llm-mode}"
+STATE_FILE="$STATE_DIR/state.json"
+LOG_FILE="$STATE_DIR/log"
+DRY_RUN=0
+RELAUNCH=0
+
+mkdir -p "$STATE_DIR"
+
+log() { printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*" >>"$LOG_FILE"; }
+die() { echo "llm-mode: $*" >&2; exit 1; }
+usage() { echo "usage: llm-mode {on|off|status|serve-stop} [--dry-run] [--relaunch]" >&2; exit 2; }
+
+run() {
+  log "RUN $*"
+  if [[ $DRY_RUN -eq 1 ]]; then echo "[dry-run] $*"; else "$@"; fi
+}
+
+cmd_on()        { log "on: start";  run true; log "on: done"; }
+cmd_off()       { log "off: start"; run true; log "off: done"; }
+cmd_status()    { echo "llm-mode: status not implemented yet"; }
+cmd_serve_stop(){ echo "llm-mode: serve-stop not implemented yet"; }
+
+[[ $# -ge 1 ]] || usage
+SUBCMD="$1"; shift
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run)  DRY_RUN=1 ;;
+    --relaunch) RELAUNCH=1 ;;
+    *) usage ;;
+  esac
+done
+
+case "$SUBCMD" in
+  on)         cmd_on ;;
+  off)        cmd_off ;;
+  status)     cmd_status ;;
+  serve-stop) cmd_serve_stop ;;
+  *)          usage ;;
+esac
