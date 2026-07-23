@@ -47,29 +47,47 @@ list_gui_apps() {
     | grep -Ev "$WHITELIST_RE" || true
 }
 
-# enabled user launch agents, excluding whitelist
+# enabled user launch agents, excluding whitelist, restricted to ones we can
+# actually restore later (a plist under ~/Library/LaunchAgents) — see F6
 list_agents() {
-  launchctl list | awk 'NR>1 {print $3}' \
-    | grep -Ev "$WHITELIST_RE" | grep -v '^-$' || true
+  local label
+  while IFS= read -r label; do
+    [[ -n "$label" ]] || continue
+    [[ -f "$HOME/Library/LaunchAgents/$label.plist" ]] || continue
+    echo "$label"
+  done < <(launchctl list | awk 'NR>1 {print $3}' \
+    | grep -Ev "$WHITELIST_RE" | grep -v '^-$' || true)
 }
 
 snapshot() {
   if [[ -f "$STATE_FILE" ]]; then
-    log "snapshot skipped: existing state preserved"
-    echo "existing state.json preserved (run 'off' to restore first)"
-    return 0
+    local existing_dry
+    existing_dry=$(state_get dry_run)
+    if [[ $DRY_RUN -eq 0 ]] && [[ "$existing_dry" =~ ^(True|true|1)$ ]]; then
+      log "replacing dry-run state"
+      echo "replacing dry-run state"
+    else
+      log "snapshot skipped: existing state preserved"
+      echo "existing state.json preserved (run 'off' to restore first)"
+      return 0
+    fi
   fi
   local apps agents prev
   apps=$(list_gui_apps | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')
   agents=$(list_agents | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')
   prev=$(sysctl -n iogpu.wired_limit_mb 2>/dev/null || echo 0)
-  state_write "{\"apps\": $apps, \"agents\": $agents, \"wired_limit_prev\": \"$prev\", \"forced_kills\": []}"
+  local dry_field=""
+  [[ $DRY_RUN -eq 1 ]] && dry_field=', "dry_run": true'
+  state_write "{\"apps\": $apps, \"agents\": $agents, \"wired_limit_prev\": \"$prev\", \"forced_kills\": []$dry_field}"
 }
 
 quit_apps() {
   local bid
   while IFS= read -r bid; do
     [[ -n "$bid" ]] || continue
+    local running
+    running=$(osascript -e "tell application \"System Events\" to (exists (processes whose bundle identifier is \"$bid\"))" 2>/dev/null || echo "false")
+    [[ "$running" == "true" ]] || continue
     run osascript -e "tell application id \"$bid\" to quit" || log "quit failed: $bid"
   done < <(state_get apps)
   [[ $DRY_RUN -eq 1 ]] && return 0
@@ -103,15 +121,15 @@ disable_agents() {
 }
 
 pause_services() {
-  run sudo mdutil -a -i off
-  run sudo tmutil disable
+  run sudo mdutil -a -i off || log "pause step failed: mdutil off"
+  run sudo tmutil disable || log "pause step failed: tmutil disable"
   for label in com.apple.bird com.apple.cloudd com.apple.photoanalysisd; do
     run launchctl bootout "gui/$(id -u)/$label" || true
   done
 }
 
 apply_sysctl() {
-  run sudo sysctl "iogpu.wired_limit_mb=$CFG_WIRED_MB"
+  run sudo sysctl "iogpu.wired_limit_mb=$CFG_WIRED_MB" || log "sysctl step failed: apply $CFG_WIRED_MB"
 }
 
 server_start() {
@@ -145,27 +163,48 @@ cmd_on() {
 cmd_off() {
   [[ -f "$STATE_FILE" ]] || die "no state file — nothing to restore"
   log "off: start"
-  server_stop || true
-  run sudo sysctl "iogpu.wired_limit_mb=$(state_get wired_limit_prev)"
+  local fails=0
+
+  server_stop || { log "restore step failed: server_stop"; fails=$((fails+1)); }
+
+  local wired_prev
+  wired_prev=$(state_get wired_limit_prev)
+  if [[ ! "$wired_prev" =~ ^[0-9]+$ ]]; then
+    log "restore warning: invalid wired_limit_prev '$wired_prev', using 0"
+    wired_prev=0
+  fi
+  run sudo sysctl "iogpu.wired_limit_mb=$wired_prev" \
+    || { log "restore step failed: sysctl restore"; fails=$((fails+1)); }
+
   local label
   while IFS= read -r label; do
     [[ -n "$label" ]] || continue
-    run launchctl enable "gui/$(id -u)/$label"
-    run launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/$label.plist" 2>/dev/null \
-      || run launchctl kickstart "gui/$(id -u)/$label" || log "restore failed: $label"
+    { run launchctl enable "gui/$(id -u)/$label" \
+        && { run launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/$label.plist" 2>/dev/null \
+             || run launchctl kickstart "gui/$(id -u)/$label"; }; } \
+      || { log "restore step failed: agent $label"; fails=$((fails+1)); }
   done < <(state_get agents)
-  run sudo mdutil -a -i on
-  run sudo tmutil enable
+
+  run sudo mdutil -a -i on || { log "restore step failed: mdutil on"; fails=$((fails+1)); }
+  run sudo tmutil enable || { log "restore step failed: tmutil enable"; fails=$((fails+1)); }
+
   if [[ $RELAUNCH -eq 1 ]]; then
     local bid
     while IFS= read -r bid; do
       [[ -n "$bid" ]] || continue
-      run open -b "$bid" || true
+      run open -b "$bid" || { log "restore step failed: relaunch $bid"; fails=$((fails+1)); }
     done < <(state_get apps)
   fi
-  run rm -f "$STATE_FILE"
-  log "off: done"
-  echo "restored. reboot fully resets any stubborn daemons."
+
+  run rm -f "$STATE_FILE" || { log "restore step failed: rm state file"; fails=$((fails+1)); }
+
+  log "off: done ($fails failed steps)"
+  if [[ $fails -gt 0 ]]; then
+    echo "restored with $fails failed steps (see log)"
+  else
+    echo "restored."
+  fi
+  echo "reboot fully resets any stubborn daemons."
 }
 cmd_status() {
   echo "model: $CFG_MODEL"
