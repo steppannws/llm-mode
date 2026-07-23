@@ -54,6 +54,11 @@ list_agents() {
 }
 
 snapshot() {
+  if [[ -f "$STATE_FILE" ]]; then
+    log "snapshot skipped: existing state preserved"
+    echo "existing state.json preserved (run 'off' to restore first)"
+    return 0
+  fi
   local apps agents prev
   apps=$(list_gui_apps | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')
   agents=$(list_agents | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')
