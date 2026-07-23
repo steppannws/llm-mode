@@ -142,7 +142,30 @@ cmd_on() {
   fi
   log "on: done"
 }
-cmd_off()       { log "off: start"; run true; log "off: done"; }
+cmd_off() {
+  [[ -f "$STATE_FILE" ]] || die "no state file — nothing to restore"
+  log "off: start"
+  server_stop || true
+  run sudo sysctl "iogpu.wired_limit_mb=$(state_get wired_limit_prev)"
+  local label
+  while IFS= read -r label; do
+    [[ -n "$label" ]] || continue
+    run launchctl enable "gui/$(id -u)/$label"
+    run launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/$label.plist" 2>/dev/null \
+      || run launchctl kickstart "gui/$(id -u)/$label" || log "restore failed: $label"
+  done < <(state_get agents)
+  run sudo mdutil -a -i on
+  run sudo tmutil enable
+  if [[ $RELAUNCH -eq 1 ]]; then
+    local bid
+    while IFS= read -r bid; do
+      [[ -n "$bid" ]] || continue
+      run open -b "$bid" || true
+    done < <(state_get apps)
+  fi
+  log "off: done"
+  echo "restored. reboot fully resets any stubborn daemons."
+}
 cmd_status() {
   echo "model: $CFG_MODEL"
   echo "port: $CFG_PORT"
