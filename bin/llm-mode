@@ -77,14 +77,17 @@ quit_apps() {
   # force-kill stragglers still running
   while IFS= read -r bid; do
     [[ -n "$bid" ]] || continue
-    if pgrep -f "$bid" >/dev/null 2>&1; then
-      run pkill -9 -f "$bid" || true
-      python3 -c "
+    local pids
+    pids=$(osascript -e "tell application \"System Events\" to get unix id of (processes whose bundle identifier is \"$bid\")" 2>/dev/null | tr -d ',' || true)
+    [[ -n "$pids" ]] || continue
+    for pid in $pids; do
+      run kill -9 "$pid" || true
+    done
+    python3 -c "
 import json
 d = json.load(open('$STATE_FILE')); d['forced_kills'].append('$bid')
 json.dump(d, open('$STATE_FILE','w'))"
-      log "forced kill: $bid"
-    fi
+    log "forced kill: $bid ($pids)"
   done < <(state_get apps)
 }
 
