@@ -10,6 +10,12 @@ RELAUNCH=0
 
 mkdir -p "$STATE_DIR"
 
+CFG_MODEL="qwen3-coder-30b-a3b"
+CFG_PORT=1234
+CFG_WIRED_MB=20480
+# shellcheck source=/dev/null
+[[ -f "$STATE_DIR/config" ]] && source "$STATE_DIR/config"
+
 log() { printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*" >>"$LOG_FILE"; }
 die() { echo "llm-mode: $*" >&2; exit 1; }
 usage() { echo "usage: llm-mode {on|off|status|serve-stop} [--dry-run] [--relaunch]" >&2; exit 2; }
@@ -21,7 +27,11 @@ run() {
 
 cmd_on()        { log "on: start";  run true; log "on: done"; }
 cmd_off()       { log "off: start"; run true; log "off: done"; }
-cmd_status()    { echo "llm-mode: status not implemented yet"; }
+cmd_status() {
+  echo "model: $CFG_MODEL"
+  echo "port: $CFG_PORT"
+  echo "wired_limit_mb: $CFG_WIRED_MB"
+}
 cmd_serve_stop(){ echo "llm-mode: serve-stop not implemented yet"; }
 
 [[ $# -ge 1 ]] || usage
