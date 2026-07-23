@@ -12,6 +12,8 @@ load helpers
 }
 
 @test "status reports server down when nothing listens" {
-  CFG_PORT=19999 run llm-mode status
+  echo 'CFG_PORT=19999' > "$LLM_MODE_DIR/config"
+  run llm-mode status
+  [[ "$output" == *"port: 19999"* ]]
   [[ "$output" == *"server: down"* ]]
 }
