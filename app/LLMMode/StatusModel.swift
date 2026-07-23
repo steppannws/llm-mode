@@ -8,7 +8,9 @@ final class StatusModel: ObservableObject {
     @Published var host = "…"
     @Published var busy = false
 
-    private func cli(_ args: [String]) -> String {
+    // Touches no published state, so it's safe to run off the main actor
+    // (called from Task.detached in run(_:) below) without blocking the UI.
+    nonisolated private func cli(_ args: [String]) -> String {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/local/bin/llm-mode")
         p.arguments = args
@@ -20,8 +22,11 @@ final class StatusModel: ObservableObject {
         } catch {
             return "error: llm-mode CLI not found at /usr/local/bin/llm-mode — run install.sh"
         }
-        p.waitUntilExit()
+        // Read before waitUntilExit: the child can block writing to a full
+        // pipe if we wait first, deadlocking against a process that's
+        // waiting on us to drain it.
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
         return String(decoding: data, as: UTF8.self)
     }
 
@@ -48,8 +53,11 @@ final class StatusModel: ObservableObject {
     func run(_ sub: String) {
         busy = true
         Task.detached { [weak self] in
-            _ = await self?.cli([sub])
-            await self?.finishRun()
+            guard let self else { return }
+            // nonisolated, synchronous call: runs on this detached task's
+            // thread, not on the main actor.
+            _ = self.cli([sub])
+            await self.finishRun()
         }
     }
 }

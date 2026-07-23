@@ -4,6 +4,13 @@ import SwiftUI
 struct LLMModeApp: App {
     @StateObject private var status = StatusModel()
 
+    init() {
+        let status = self.status
+        Task { @MainActor in
+            status.refresh()
+        }
+    }
+
     var body: some Scene {
         MenuBarExtra("LLM", systemImage: status.serverUp ? "brain.fill" : "brain") {
             Text("\(status.model) — \(status.serverUp ? "up" : "down")")
