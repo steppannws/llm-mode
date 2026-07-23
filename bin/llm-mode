@@ -66,7 +66,63 @@ snapshot() {
   state_write "{\"apps\": $apps, \"agents\": $agents, \"wired_limit_prev\": \"$prev\", \"forced_kills\": []}"
 }
 
-cmd_on()        { log "on: start"; snapshot; run true; log "on: done"; }
+quit_apps() {
+  local bid
+  while IFS= read -r bid; do
+    [[ -n "$bid" ]] || continue
+    run osascript -e "tell application id \"$bid\" to quit" || log "quit failed: $bid"
+  done < <(state_get apps)
+  [[ $DRY_RUN -eq 1 ]] && return 0
+  sleep 10
+  # force-kill stragglers still running
+  while IFS= read -r bid; do
+    [[ -n "$bid" ]] || continue
+    if pgrep -f "$bid" >/dev/null 2>&1; then
+      run pkill -9 -f "$bid" || true
+      python3 -c "
+import json
+d = json.load(open('$STATE_FILE')); d['forced_kills'].append('$bid')
+json.dump(d, open('$STATE_FILE','w'))"
+      log "forced kill: $bid"
+    fi
+  done < <(state_get apps)
+}
+
+disable_agents() {
+  local label found=0
+  while IFS= read -r label; do
+    [[ -n "$label" ]] || continue
+    found=1
+    run launchctl bootout "gui/$(id -u)/$label" || log "bootout failed: $label"
+    run launchctl disable "gui/$(id -u)/$label" || true
+  done < <(state_get agents)
+  if [[ $found -eq 0 ]]; then echo "no agents to disable"; fi
+}
+
+pause_services() {
+  run sudo mdutil -a -i off
+  run sudo tmutil disable
+  for label in com.apple.bird com.apple.cloudd com.apple.photoanalysisd; do
+    run launchctl bootout "gui/$(id -u)/$label" || true
+  done
+}
+
+apply_sysctl() {
+  run sudo sysctl "iogpu.wired_limit_mb=$CFG_WIRED_MB"
+}
+
+cmd_on() {
+  log "on: start"
+  local before; before=$(vm_stat | awk '/Pages free/ {print $3*16384/1048576 "MB"}')
+  snapshot
+  quit_apps
+  disable_agents
+  pause_services
+  apply_sysctl
+  local after; after=$(vm_stat | awk '/Pages free/ {print $3*16384/1048576 "MB"}')
+  echo "free RAM before: $before  after: $after"
+  log "on: done"
+}
 cmd_off()       { log "off: start"; run true; log "off: done"; }
 cmd_status() {
   echo "model: $CFG_MODEL"
