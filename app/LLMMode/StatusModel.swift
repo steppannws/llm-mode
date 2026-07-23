@@ -15,7 +15,11 @@ final class StatusModel: ObservableObject {
         let pipe = Pipe()
         p.standardOutput = pipe
         p.standardError = pipe
-        try? p.run()
+        do {
+            try p.run()
+        } catch {
+            return "error: llm-mode CLI not found at /usr/local/bin/llm-mode — run install.sh"
+        }
         p.waitUntilExit()
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         return String(decoding: data, as: UTF8.self)
