@@ -45,7 +45,7 @@ Known limitation, accepted: some system daemons respawn via `KeepAlive` regardle
 
 ## Privileges
 
-`sysctl`, `mdutil`, `tmutil`, and system-domain bootouts need root. Installer adds a sudoers drop-in (`/etc/sudoers.d/llm-mode`) with `NOPASSWD` scoped to the installed script path only. This keeps `on`/`off` non-interactive over SSH.
+`sysctl`, `mdutil`, `tmutil`, and system-domain bootouts need root. Installer adds a sudoers drop-in (`/etc/sudoers.d/llm-mode`) with `NOPASSWD` scoped to the exact commands needed (sysctl wired-limit key, mdutil on/off, tmutil enable/disable) — no launchctl, which the CLI only uses in the user domain without sudo. This keeps `on`/`off` non-interactive over SSH.
 
 ## Error handling
 
