@@ -5,7 +5,7 @@ set -euo pipefail
 STATE_DIR="${LLM_MODE_DIR:-$HOME/.llm-mode}"
 STATE_FILE="$STATE_DIR/state.json"
 LOG_FILE="$STATE_DIR/log"
-DRY_RUN=0
+DRY_RUN="${DRY_RUN:-0}"
 RELAUNCH=0
 
 mkdir -p "$STATE_DIR"
