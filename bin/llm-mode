@@ -16,6 +16,8 @@ CFG_WIRED_MB=20480
 # shellcheck source=/dev/null
 [[ -f "$STATE_DIR/config" ]] && source "$STATE_DIR/config"
 
+WHITELIST_RE='sshd|loginwindow|WindowServer|mDNSResponder|notifyd|cfprefsd|systemstats|powerd|configd|distnoted|com\.apple\.Finder|LM Studio|lmstudio|lms|Terminal|iTerm'
+
 log() { printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*" >>"$LOG_FILE"; }
 die() { echo "llm-mode: $*" >&2; exit 1; }
 usage() { echo "usage: llm-mode {on|off|status|serve-stop} [--dry-run] [--relaunch]" >&2; exit 2; }
@@ -25,7 +27,41 @@ run() {
   if [[ $DRY_RUN -eq 1 ]]; then echo "[dry-run] $*"; else "$@"; fi
 }
 
-cmd_on()        { log "on: start";  run true; log "on: done"; }
+state_write() { printf '%s' "$1" >"$STATE_FILE"; log "state written"; }
+
+state_get() {
+  python3 -c "
+import json, sys
+try:
+    d = json.load(open('$STATE_FILE'))
+    v = d.get('$1', '')
+    print('\n'.join(v) if isinstance(v, list) else v)
+except Exception:
+    pass"
+}
+
+# list visible (non-background) GUI apps, excluding whitelist
+list_gui_apps() {
+  osascript -e 'tell application "System Events" to get bundle identifier of (processes where background only is false)' \
+    | tr ',' '\n' | sed 's/^ *//; s/ *$//' | grep -v '^$' \
+    | grep -Ev "$WHITELIST_RE" || true
+}
+
+# enabled user launch agents, excluding whitelist
+list_agents() {
+  launchctl list | awk 'NR>1 {print $3}' \
+    | grep -Ev "$WHITELIST_RE" | grep -v '^-$' || true
+}
+
+snapshot() {
+  local apps agents prev
+  apps=$(list_gui_apps | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')
+  agents=$(list_agents | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')
+  prev=$(sysctl -n iogpu.wired_limit_mb 2>/dev/null || echo 0)
+  state_write "{\"apps\": $apps, \"agents\": $agents, \"wired_limit_prev\": \"$prev\", \"forced_kills\": []}"
+}
+
+cmd_on()        { log "on: start"; snapshot; run true; log "on: done"; }
 cmd_off()       { log "off: start"; run true; log "off: done"; }
 cmd_status() {
   echo "model: $CFG_MODEL"
