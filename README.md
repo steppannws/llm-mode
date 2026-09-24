@@ -69,7 +69,7 @@ name, server up/down, free RAM and hostname. It runs the same CLI.
 | 2 | **Quit apps** | AppleScript `quit`, then `kill -9` for anything still alive after 10s |
 | 3 | **Park agents** | `launchctl bootout` + `disable` user-installed agents (plist in `~/Library/LaunchAgents`) |
 | 4 | **Pause services** | Spotlight (`mdutil -a -i off`), Time Machine (`tmutil disable`), `bird` / `cloudd` / `photoanalysisd` |
-| 5 | **Raise GPU limit** | `sysctl iogpu.wired_limit_mb=20480`, which leaves about 4 GB for macOS on a 24 GB machine |
+| 5 | **Raise GPU limit** | `sysctl iogpu.wired_limit_mb=<total RAM − 4 GB>` (20480 on a 24 GB machine); the reserve is configurable |
 | 6 | **Serve** | `lms server start`, `lms load <model>`, then polls `/v1/models` until it responds |
 
 `off` goes through `state.json` in reverse: stops the server, restores the old
@@ -102,18 +102,20 @@ being able to undo that:
 
 `on` never touches `sshd`, `loginwindow`, `WindowServer`, `mDNSResponder`,
 `notifyd`, `cfprefsd`, `systemstats`, `powerd`, `configd`, `distnoted`, Finder,
-LM Studio (`LM Studio` / `lmstudio` / `lms`), or `Terminal` / `iTerm`.
+LM Studio (`LM Studio` / `lmstudio` / `lms`), or `Terminal` / `iTerm`. Add your own
+with `CFG_WHITELIST_EXTRA` in `config` (see [Configuration](#configuration)).
 
 > [!WARNING]
 > **Run it from Terminal.app, iTerm2, or over SSH.** Other terminals (VS Code's
 > integrated terminal, Warp, Ghostty, kitty…) are not whitelisted. `on` will quit
-> them like any other app, and the shell that ran the command goes with them.
+> them like any other app, and the shell that ran the command goes with them. To use one
+> of them, add it to `CFG_WHITELIST_EXTRA`.
 
 ## Requirements
 
 - macOS 14+ on Apple Silicon (the server Mac)
 - [LM Studio](https://lmstudio.ai) with its `lms` CLI on `PATH`
-- A second Mac (or anything with `ssh`) as the client
+- A second machine with `ssh` as the client: macOS, Linux, or Windows 10+
 - `bats-core` to run tests, `xcodegen` to build the menu bar app
 
 ## Install
@@ -144,19 +146,27 @@ llm-mode {on|off|status|serve-stop} [--dry-run] [--relaunch]
 |---|---|
 | `on` | Snapshot, free memory, raise GPU limit, start server, load model. Prints free RAM before/after and an API health check. |
 | `off` | Restore everything from `state.json`, best-effort. Add `--relaunch` to reopen the apps it quit. |
-| `status` | Model, port, wired limit, server up/down, LAN hostname, free RAM. |
+| `status` | Model, port, wired limit, server up/down, LAN hostname, free RAM (free + speculative + inactive pages). |
 | `serve-stop` | Stop only the LM Studio server. Nothing else is touched. |
 | `--dry-run` | Print every action instead of running it. |
 
 ### Client
 
 ```bash
-client/client-connect.sh you@server.local [port]
+client/client-connect.sh you@server.local [port]          # macOS / Linux
+```
+
+```powershell
+.\client\client-connect.ps1 you@server.local [port]       # Windows (PowerShell)
 ```
 
 Or set `LLM_HOST` / `LLM_PORT`. The script opens `ssh -N -L 1234:localhost:1234`,
 waits until `/v1/models` responds, and keeps the tunnel open until you press
-Ctrl-C. Then point any OpenAI-compatible client at `http://localhost:1234/v1`
+Ctrl-C. It exits early if `ssh` fails.
+
+- **Linux:** `server.local` names need mDNS (`avahi-daemon` + `nss-mdns`), or use the server's IP.
+- **Windows:** uses the built-in OpenSSH client (Settings → Apps → Optional features → OpenSSH Client).
+  If script execution is blocked, run `powershell -ExecutionPolicy Bypass -File client\client-connect.ps1 ...`. Then point any OpenAI-compatible client at `http://localhost:1234/v1`
 (the API key can be anything, e.g. `local`):
 
 - **Continue / Cline:** API base URL `http://localhost:1234/v1`
@@ -196,7 +206,9 @@ Everything lives in `~/.llm-mode/`:
 # ~/.llm-mode/config (defaults shown)
 CFG_MODEL=qwen3-coder-30b-a3b
 CFG_PORT=1234
-CFG_WIRED_MB=20480   # set to (total RAM - ~4 GB)
+CFG_RESERVE_MB=4096  # RAM left for macOS; wired limit = total RAM - this
+CFG_WIRED_MB=        # set to pin an exact wired limit instead
+CFG_WHITELIST_EXTRA= # extra regex, e.g. 'Ghostty|com\.mitchellh\.ghostty'
 ```
 
 **Model storage:** models live wherever LM Studio stores them. If that's an
@@ -207,7 +219,8 @@ most quantized models.
 
 ```
 bin/llm-mode              The CLI. All logic lives here, and it works the same over SSH.
-client/client-connect.sh  Opens the tunnel from the client Mac.
+client/client-connect.sh  Opens the tunnel from a macOS/Linux client.
+client/client-connect.ps1 Same for Windows (PowerShell + built-in OpenSSH).
 app/                      SwiftUI MenuBarExtra. Runs the CLI in the background, has no logic of its own.
 install.sh                Symlink + scoped sudoers + Remote Login.
 tests/                    bats suite, each test gets its own temp state dir.
@@ -219,7 +232,7 @@ SSH session on your phone, and the Swift app has nothing of its own to test.
 ## Testing
 
 ```bash
-bats tests/   # 23 tests; changes to the system only ever run as --dry-run
+bats tests/   # 30 tests; changes to the system only ever run as --dry-run
 ```
 
 [`docs/manual-tests.md`](docs/manual-tests.md) lists the checks that need two real
@@ -228,11 +241,11 @@ session. The automated suite can't safely run these.
 
 ## Roadmap
 
-- [ ] Detect RAM and pick `CFG_WIRED_MB` automatically
-- [ ] Better "free RAM" metric (count inactive + purgeable, not only `Pages free`)
-- [ ] User-editable whitelist in `config`
+- [x] Detect RAM and pick `CFG_WIRED_MB` automatically
+- [x] Better "free RAM" metric (count inactive + speculative, not only `Pages free`)
+- [x] User-editable whitelist in `config`
 - [x] Signed + notarized menu bar app build
-- [ ] Linux/Windows client script
+- [x] Linux/Windows client script
 
 ## License
 

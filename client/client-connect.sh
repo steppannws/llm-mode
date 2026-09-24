@@ -23,6 +23,7 @@ TUNNEL_PID=$!
 trap 'kill $TUNNEL_PID 2>/dev/null' EXIT
 echo "waiting for API..."
 for _ in $(seq 1 30); do
+  kill -0 $TUNNEL_PID 2>/dev/null || { echo "ssh exited" >&2; exit 1; }
   curl -sf -m 2 "http://localhost:$PORT/v1/models" >/dev/null && { echo "API ready."; break; }
   sleep 2
 done
