@@ -134,6 +134,10 @@ git clone https://github.com/steppannws/llm-mode.git && cd llm-mode
 - installs the scoped sudoers grant at `/etc/sudoers.d/llm-mode`, validated first
 - enables Remote Login (`systemsetup -setremotelogin on`) so the client can SSH in
 
+Optional: get the menu bar app from [Releases](https://github.com/steppannws/llm-mode/releases/latest).
+Unzip it and move `LLMMode.app` to `/Applications`. It's signed and notarized, so it opens
+without Gatekeeper warnings.
+
 ## Usage
 
 ### Server
@@ -174,6 +178,9 @@ Ctrl-C. It exits early if `ssh` fails.
 - **aider:** `aider --openai-api-base http://localhost:1234/v1 --openai-api-key local`
 
 ### Menu bar app
+
+Download the signed build from [Releases](https://github.com/steppannws/llm-mode/releases/latest),
+or build it yourself:
 
 ```bash
 cd app && xcodegen && xcodebuild -scheme LLMMode -configuration Release build
@@ -232,7 +239,7 @@ SSH session on your phone, and the Swift app has nothing of its own to test.
 ## Testing
 
 ```bash
-bats tests/   # 30 tests; changes to the system only ever run as --dry-run
+bats tests/   # 31 tests; changes to the system only ever run as --dry-run
 ```
 
 [`docs/manual-tests.md`](docs/manual-tests.md) lists the checks that need two real
