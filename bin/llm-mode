@@ -12,11 +12,14 @@ mkdir -p "$STATE_DIR"
 
 CFG_MODEL="qwen3-coder-30b-a3b"
 CFG_PORT=1234
-CFG_WIRED_MB=20480
+CFG_WIRED_MB=""        # empty = total RAM - CFG_RESERVE_MB
+CFG_RESERVE_MB=4096    # RAM left for macOS when CFG_WIRED_MB is auto
+CFG_WHITELIST_EXTRA="" # extra regex alternation, e.g. 'Ghostty|com\.mitchellh\.ghostty'
 # shellcheck source=/dev/null
 [[ -f "$STATE_DIR/config" ]] && source "$STATE_DIR/config"
 
 WHITELIST_RE='sshd|loginwindow|WindowServer|mDNSResponder|notifyd|cfprefsd|systemstats|powerd|configd|distnoted|com\.apple\.Finder|LM Studio|lmstudio|lms|Terminal|iTerm'
+[[ -n "$CFG_WHITELIST_EXTRA" ]] && WHITELIST_RE="$WHITELIST_RE|$CFG_WHITELIST_EXTRA"
 
 log() { printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*" >>"$LOG_FILE"; }
 die() { echo "llm-mode: $*" >&2; exit 1; }
@@ -25,6 +28,25 @@ usage() { echo "usage: llm-mode {on|off|status|serve-stop} [--dry-run] [--relaun
 run() {
   log "RUN $*"
   if [[ $DRY_RUN -eq 1 ]]; then echo "[dry-run] $*"; else "$@"; fi
+}
+
+# total RAM minus reserve, unless CFG_WIRED_MB is set explicitly
+wired_mb() {
+  if [[ -n "$CFG_WIRED_MB" ]]; then echo "$CFG_WIRED_MB"; return; fi
+  local total_mb
+  total_mb=$(( $(sysctl -n hw.memsize) / 1048576 ))
+  (( total_mb > CFG_RESERVE_MB )) || die "CFG_RESERVE_MB ($CFG_RESERVE_MB) >= total RAM (${total_mb}MB)"
+  echo $(( total_mb - CFG_RESERVE_MB ))
+}
+
+# memory reclaimable without swapping: free + speculative + inactive pages
+free_ram_mb() {
+  vm_stat | awk '
+    /page size of/      { for (i = 1; i <= NF; i++) if ($i == "of") ps = $(i + 1) }
+    /^Pages free/        { n += $3 }
+    /^Pages speculative/ { n += $3 }
+    /^Pages inactive/    { n += $3 }
+    END { printf "%.0f", n * ps / 1048576 }'
 }
 
 state_write() { printf '%s' "$1" >"$STATE_FILE"; log "state written"; }
@@ -129,7 +151,8 @@ pause_services() {
 }
 
 apply_sysctl() {
-  run sudo sysctl "iogpu.wired_limit_mb=$CFG_WIRED_MB" || log "sysctl step failed: apply $CFG_WIRED_MB"
+  local mb="$1"
+  run sudo sysctl "iogpu.wired_limit_mb=$mb" || log "sysctl step failed: apply $mb"
 }
 
 server_start() {
@@ -145,13 +168,14 @@ server_health() {
 
 cmd_on() {
   log "on: start"
-  local before; before=$(vm_stat | awk '/Pages free/ {print $3*16384/1048576 "MB"}')
+  local wired; wired=$(wired_mb)   # fail before touching anything
+  local before; before="$(free_ram_mb)MB"
   snapshot
   quit_apps
   disable_agents
   pause_services
-  apply_sysctl
-  local after; after=$(vm_stat | awk '/Pages free/ {print $3*16384/1048576 "MB"}')
+  apply_sysctl "$wired"
+  local after; after="$(free_ram_mb)MB"
   echo "free RAM before: $before  after: $after"
   server_start
   if [[ $DRY_RUN -eq 0 ]]; then
@@ -209,10 +233,10 @@ cmd_off() {
 cmd_status() {
   echo "model: $CFG_MODEL"
   echo "port: $CFG_PORT"
-  echo "wired_limit_mb: $CFG_WIRED_MB"
+  echo "wired_limit_mb: $(wired_mb)"
   if server_health; then echo "server: up"; else echo "server: down"; fi
   echo "host: $(scutil --get LocalHostName 2>/dev/null || hostname).local"
-  vm_stat | awk '/Pages free/ {printf "free RAM: %.0fMB\n", $3*16384/1048576}'
+  echo "free RAM: $(free_ram_mb)MB"
 }
 cmd_serve_stop() { server_stop; }
 
