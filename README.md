@@ -183,6 +183,15 @@ cd app && xcodegen && xcodebuild -scheme LLMMode -configuration Release build
 The app has no Dock icon, just a 🧠 in the menu bar. The icon is filled when the
 server is up. It calls `/usr/local/bin/llm-mode`, so install the CLI first.
 
+**Signed release build** (maintainers): needs a *Developer ID Application*
+certificate in the keychain and a stored notarytool profile:
+
+```bash
+xcrun notarytool store-credentials llm-mode-notary --apple-id <you> --team-id <TEAMID>
+scripts/release.sh                  # build, sign, notarize, staple → build/LLMMode-<version>.zip
+scripts/release.sh --no-notarize    # build + sign only
+```
+
 ## Configuration
 
 Everything lives in `~/.llm-mode/`:
@@ -235,7 +244,7 @@ session. The automated suite can't safely run these.
 - [x] Detect RAM and pick `CFG_WIRED_MB` automatically
 - [x] Better "free RAM" metric (count inactive + speculative, not only `Pages free`)
 - [x] User-editable whitelist in `config`
-- [ ] Signed + notarized menu bar app build
+- [x] Signed + notarized menu bar app build
 - [x] Linux/Windows client script
 
 ## License
