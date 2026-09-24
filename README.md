@@ -1,163 +1,230 @@
-# llm-mode
+<div align="center">
 
-Turn a Mac into a dedicated local-LLM coding server on demand. One command frees
-maximum RAM by quitting apps and disabling non-essential background services,
-raises the GPU memory limit, starts an LM Studio inference server, and exposes
-it to a second Mac over an SSH tunnel. A restore command reverses everything.
+# 🧠 llm-mode
 
-## Components
+**Turn a spare Mac into a local LLM coding server with one command, and get it back with another.**
 
-- `bin/llm-mode` — the CLI, single source of logic. Runs on the server Mac.
-- `client/client-connect.sh` — run on the client Mac; opens the SSH tunnel to the server's API.
-- `app/` — SwiftUI menu bar wrapper (`LLMMode.app`) around the CLI: On / Off / Refresh, shows server state, free RAM, and host.
-- `install.sh` — one-time setup: symlinks the CLI, grants scoped passwordless sudo, enables Remote Login.
+Quits your apps, parks background services, raises the GPU memory limit, starts
+LM Studio, and serves the model to your other Mac over an SSH tunnel.
+`llm-mode off` puts everything back.
+
+![macOS 14+](https://img.shields.io/badge/macOS-14+-black?style=flat-square&logo=apple)
+![Apple Silicon](https://img.shields.io/badge/Apple_Silicon-required-555?style=flat-square&logo=apple)
+![Bash](https://img.shields.io/badge/core-bash-4EAA25?style=flat-square&logo=gnubash&logoColor=white)
+![Tests 23](https://img.shields.io/badge/bats_tests-23-success?style=flat-square)
+![License MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)
+
+<!-- Read the story: [TITLE](MEDIUM_URL) -->
+
+</div>
+
+---
+
+## Why
+
+A 24 GB MacBook can run a 30B coding model, but only just. A 4-bit
+`qwen3-coder-30b-a3b` needs about 17 GB of unified memory that the GPU can wire.
+On a normal working day that memory is already taken by Chrome, Slack, Docker,
+Spotlight indexing and a dozen updaters. macOS also caps how much memory the GPU
+may wire, and on a machine this size the default cap is below what the model needs.
+
+You can free all of that by hand: quit apps, `launchctl bootout` a few agents,
+turn off Spotlight and Time Machine, `sysctl` the GPU limit, start the server,
+load the model. Then you have to remember every step so you can undo it.
+
+`llm-mode on` does all of that and writes down what it changed. `llm-mode off`
+reads those notes back and undoes each step.
+
+```
+┌──────────── laptop ────────────┐           ┌────────── server Mac ──────────┐
+│ Zed / Continue / Cline / aider │           │  llm-mode on                   │
+│   → http://localhost:1234/v1   │── ssh -L ─│  LM Studio  → localhost:1234   │
+└────────────────────────────────┘           └────────────────────────────────┘
+```
+
+## What it looks like
+
+<div align="center">
+<img src="docs/images/on-dry-run.png" width="680" alt="llm-mode on --dry-run: every app, launch agent, service and sysctl it would touch">
+</div>
+
+> Run `--dry-run` first. It prints every command `on` would execute, so you can
+> check what it plans to close before anything is closed.
+
+<div align="center">
+<img src="docs/images/client-connect.png" width="680" alt="client-connect.sh: SSH tunnel to the server's OpenAI-compatible API">
+</div>
+
+> On the laptop, one script opens the tunnel and waits until the API responds.
+> Editors then use `localhost:1234` as if the model were running on the laptop.
+
+There's also a menu bar app (`LLMMode.app`) with **ON / OFF / Refresh**, model
+name, server up/down, free RAM and hostname. It runs the same CLI.
+
+## What `on` does
+
+| # | Step | How |
+|---|------|-----|
+| 1 | **Snapshot** | Running GUI apps, enabled user launch agents, current `iogpu.wired_limit_mb` go to `~/.llm-mode/state.json`, *before anything changes* |
+| 2 | **Quit apps** | AppleScript `quit`, then `kill -9` for anything still alive after 10s |
+| 3 | **Park agents** | `launchctl bootout` + `disable` user-installed agents (plist in `~/Library/LaunchAgents`) |
+| 4 | **Pause services** | Spotlight (`mdutil -a -i off`), Time Machine (`tmutil disable`), `bird` / `cloudd` / `photoanalysisd` |
+| 5 | **Raise GPU limit** | `sysctl iogpu.wired_limit_mb=20480`, which leaves about 4 GB for macOS on a 24 GB machine |
+| 6 | **Serve** | `lms server start`, `lms load <model>`, then polls `/v1/models` until it responds |
+
+`off` goes through `state.json` in reverse: stops the server, restores the old
+wired limit, re-enables and restarts agents, turns Spotlight and Time Machine back
+on, and with `--relaunch` reopens the apps it quit.
+
+## Safety
+
+The tool quits apps and disables system services, so most of the design is about
+being able to undo that:
+
+- **State is written before any change.** If `on` is interrupted halfway, `off`
+  can still restore. If something is still wrong, a reboot resets it.
+- **`on` never overwrites real state.** Running it twice keeps the first
+  snapshot. To take a new one, run `off` and then `on`. The only state it replaces
+  is a snapshot from `--dry-run`, which is tagged `"dry_run": true`.
+- **Every restore step runs on its own.** If one step fails (for example `sudo`
+  with no TTY when triggered from the menu bar), `off` logs it and continues. It
+  prints `restored.` or `restored with N failed steps (see log)`.
+- **It only disables agents it can re-enable.** That means agents with a plist in
+  `~/Library/LaunchAgents`. Apple's own GUI agents are left alone. An early version
+  did disable them and `off` couldn't bring them back.
+- **sudo is limited to five commands.** `install.sh` grants `NOPASSWD` for exactly
+  `sysctl iogpu.wired_limit_mb=*`, `mdutil -a -i off|on`, `tmutil disable|enable`.
+  The grant is checked with `visudo -c -f` before it's copied into `/etc/sudoers.d/`.
+- **The API is never exposed on the LAN.** LM Studio listens on localhost only. The
+  client reaches it over SSH, so the only open port is port 22.
+
+### Whitelist
+
+`on` never touches `sshd`, `loginwindow`, `WindowServer`, `mDNSResponder`,
+`notifyd`, `cfprefsd`, `systemstats`, `powerd`, `configd`, `distnoted`, Finder,
+LM Studio (`LM Studio` / `lmstudio` / `lms`), or `Terminal` / `iTerm`.
+
+> [!WARNING]
+> **Run it from Terminal.app, iTerm2, or over SSH.** Other terminals (VS Code's
+> integrated terminal, Warp, Ghostty, kitty…) are not whitelisted. `on` will quit
+> them like any other app, and the shell that ran the command goes with them.
 
 ## Requirements
 
-- macOS 14+
+- macOS 14+ on Apple Silicon (the server Mac)
 - [LM Studio](https://lmstudio.ai) with its `lms` CLI on `PATH`
-- `bats-core` (only for running the test suite)
-- `xcodegen` (only for building the menu bar app)
+- A second Mac (or anything with `ssh`) as the client
+- `bats-core` to run tests, `xcodegen` to build the menu bar app
 
 ## Install
 
+On the **server** Mac:
+
+```bash
+git clone https://github.com/steppannws/llm-mode.git && cd llm-mode
+./install.sh --dry-run   # preview
+./install.sh             # prompts for your sudo password once
 ```
-./install.sh
-```
 
-This must be run manually (it prompts for your sudo password). It:
+`install.sh` does three things:
 
-- symlinks `bin/llm-mode` to `/usr/local/bin/llm-mode`
-- installs `/etc/sudoers.d/llm-mode`, a `NOPASSWD` grant scoped to exactly:
-  `sysctl iogpu.wired_limit_mb=*`, `mdutil -a -i off`, `mdutil -a -i on`,
-  `tmutil disable`, `tmutil enable` — nothing else, so `on`/`off` can run
-  non-interactively (including over SSH). The grant is written to a temp file
-  and validated with `visudo -c -f` before it's ever installed into
-  `/etc/sudoers.d/`, so a malformed line can't take effect on the live sudo
-  policy.
-- enables Remote Login (`systemsetup -setremotelogin on`) so the client Mac can SSH in
+- symlinks `bin/llm-mode` → `/usr/local/bin/llm-mode`
+- installs the scoped sudoers grant at `/etc/sudoers.d/llm-mode`, validated first
+- enables Remote Login (`systemsetup -setremotelogin on`) so the client can SSH in
 
-Use `./install.sh --dry-run` to preview the commands without executing them.
+## Usage
 
-## Server usage (`llm-mode`)
+### Server
 
 ```
 llm-mode {on|off|status|serve-stop} [--dry-run] [--relaunch]
 ```
 
-- **`on`** — snapshots running GUI apps and enabled, user-installed launch
-  agents to `~/.llm-mode/state.json`, quits GUI apps that are actually running
-  (force-kills stragglers after 10s), disables those non-whitelisted launch
-  agents, pauses Spotlight (`mdutil`) and Time Machine (`tmutil`), raises
-  `iogpu.wired_limit_mb`, then starts the LM Studio server and loads the
-  configured model. Prints free RAM before/after and an API health check. Only
-  user-installed agents (ones with a plist under `~/Library/LaunchAgents`) are
-  disabled — they're the only ones `off` can reliably restore; system/Apple
-  GUI agents are left alone (`pause_services` separately handles `bird`,
-  `cloudd`, `photoanalysisd`). If `state.json` already exists, `on` **never
-  overwrites real state** — run `off` first to restore, then `on` again. The
-  one exception: a state file written by a previous `on --dry-run` (tagged
-  `"dry_run": true`) is not real state, so a real `on` replaces it with a
-  fresh snapshot instead of treating it as something to protect.
-- **`off`** — reverses everything from `state.json` on a best-effort basis:
-  stops the LM Studio server, restores the previous `iogpu.wired_limit_mb`,
-  re-enables and restarts launch agents, re-enables Spotlight/Time Machine,
-  and (with `--relaunch`) reopens the apps that were quit. Deletes
-  `state.json` on success. Every restore step is independent — if one fails
-  (e.g. a `sudo` prompt can't be answered because there's no TTY, such as when
-  triggered from the menu bar app), it's logged and `off` continues with the
-  rest rather than aborting halfway. Prints `restored.` when everything
-  succeeded, or `restored with N failed steps (see log)` otherwise.
-- **`status`** — prints configured model, port, wired memory limit, whether
-  the server responds, LAN hostname, and current free RAM.
-- **`serve-stop`** — stops just the LM Studio server, without touching
-  anything else.
-- `--dry-run` — prints every action instead of executing it. It still writes
-  a provisional `state.json` (tagged `"dry_run": true`) so the dry-run output
-  reflects what a real `on` would snapshot; that provisional file is replaced
-  outright by the next real `on`, so it never blocks or gets mistaken for
-  real state to restore.
+| Command | Does |
+|---|---|
+| `on` | Snapshot, free memory, raise GPU limit, start server, load model. Prints free RAM before/after and an API health check. |
+| `off` | Restore everything from `state.json`, best-effort. Add `--relaunch` to reopen the apps it quit. |
+| `status` | Model, port, wired limit, server up/down, LAN hostname, free RAM. |
+| `serve-stop` | Stop only the LM Studio server. Nothing else is touched. |
+| `--dry-run` | Print every action instead of running it. |
 
-**Restore guarantee:** `state.json` is written before anything is changed, so
-`off` can always restore even if the CLI was interrupted mid-`on`. A full
-reboot is the final safety net — it resets any stubborn daemons regardless of
-state file contents.
+### Client
 
-### Whitelist
-
-`on` never touches: `sshd`, `loginwindow`, `WindowServer`, `mDNSResponder`,
-`notifyd`, `cfprefsd`, `systemstats`, `powerd`, `configd`, `distnoted`,
-`com.apple.Finder`, LM Studio (`LM Studio`/`lmstudio`/`lms`), and
-`Terminal`/`iTerm` (so the invoking shell/SSH session survives).
-
-**Run it from a whitelisted terminal.** Invoke `llm-mode` from Terminal.app,
-iTerm2, or over an SSH session — those are the only terminal apps in the
-whitelist. Other terminal apps (VS Code's integrated terminal, Warp, kitty,
-etc.) are **not** whitelisted and will be quit like any other GUI app when you
-run `on`.
-
-### Configuration
-
-State, config, and log live under `~/.llm-mode/`:
-
-- `~/.llm-mode/state.json` — snapshot written by `on`, consumed and deleted by `off`
-- `~/.llm-mode/config` — optional shell-sourced overrides
-- `~/.llm-mode/log` — append-only, timestamped action log
-
-Config keys (defaults shown):
-
-```
-CFG_MODEL=qwen3-coder-30b-a3b
-CFG_PORT=1234
-CFG_WIRED_MB=20480
+```bash
+client/client-connect.sh you@server.local [port]
 ```
 
-## Client usage
+Or set `LLM_HOST` / `LLM_PORT`. The script opens `ssh -N -L 1234:localhost:1234`,
+waits until `/v1/models` responds, and keeps the tunnel open until you press
+Ctrl-C. Then point any OpenAI-compatible client at `http://localhost:1234/v1`
+(the API key can be anything, e.g. `local`):
 
-From the client Mac:
+- **Continue / Cline:** API base URL `http://localhost:1234/v1`
+- **Zed:** custom OpenAI-compatible provider, base URL `http://localhost:1234/v1`
+- **aider:** `aider --openai-api-base http://localhost:1234/v1 --openai-api-key local`
 
-```
-client/client-connect.sh [user@host] [port]
-```
+### Menu bar app
 
-Defaults come from `LLM_HOST` (default `stepan@m4.local`) and `LLM_PORT`
-(default `1234`) env vars, or pass them positionally. It opens
-`ssh -N -L <port>:localhost:<port> <host>`, waits for
-`http://localhost:<port>/v1/models` to respond, then holds the tunnel open
-until interrupted. Pass `--dry-run` to print the tunnel command without
-connecting.
-
-### Editor configuration
-
-Once the tunnel is up, point any OpenAI-compatible client at
-`http://localhost:1234/v1` (API key can be anything, e.g. `local`):
-
-- **Continue** / **Cline**: set the model's API base URL to `http://localhost:1234/v1`
-- **Zed**: configure a custom OpenAI-compatible provider with base URL `http://localhost:1234/v1`
-- **aider**: `aider --openai-api-base http://localhost:1234/v1 --openai-api-key local`
-
-## Menu bar app
-
-```
+```bash
 cd app && xcodegen && xcodebuild -scheme LLMMode -configuration Release build
 ```
 
-Requires the CLI already installed (`llm-mode` on `PATH`) since the app shells
-out to it. Menu bar only, no Dock icon. Buttons: LLM Mode ON / OFF, Refresh,
-Quit; shows model, up/down state, free RAM, and host.
+`LLMMode.xcodeproj` is generated and git-ignored, so `xcodegen` is required.
+The app has no Dock icon, just a 🧠 in the menu bar. The icon is filled when the
+server is up. It calls `/usr/local/bin/llm-mode`, so install the CLI first.
 
-## Model storage note
+## Configuration
 
-Models live wherever LM Studio is configured to store them. If pointing LM
-Studio at an external drive, it must be formatted **APFS or exFAT** — FAT32's
-4 GB per-file limit will block loading quantized model files larger than that.
+Everything lives in `~/.llm-mode/`:
+
+| File | Purpose |
+|---|---|
+| `config` | Optional overrides, sourced as shell |
+| `state.json` | Snapshot written by `on`, consumed and deleted by `off` |
+| `log` | Append-only, timestamped record of every command run |
+
+```bash
+# ~/.llm-mode/config (defaults shown)
+CFG_MODEL=qwen3-coder-30b-a3b
+CFG_PORT=1234
+CFG_WIRED_MB=20480   # set to (total RAM - ~4 GB)
+```
+
+**Model storage:** models live wherever LM Studio stores them. If that's an
+external drive, format it **APFS or exFAT**. FAT32's 4 GB file limit blocks
+most quantized models.
+
+## Architecture
+
+```
+bin/llm-mode              The CLI. All logic lives here, and it works the same over SSH.
+client/client-connect.sh  Opens the tunnel from the client Mac.
+app/                      SwiftUI MenuBarExtra. Runs the CLI in the background, has no logic of its own.
+install.sh                Symlink + scoped sudoers + Remote Login.
+tests/                    bats suite, each test gets its own temp state dir.
+```
+
+All logic is in one bash file. Anything the menu bar can do also works from an
+SSH session on your phone, and the Swift app has nothing of its own to test.
 
 ## Testing
 
-```
-bats tests/
+```bash
+bats tests/   # 23 tests; changes to the system only ever run as --dry-run
 ```
 
-See `docs/manual-tests.md` for the manual test matrix to run on the actual
-server/client Macs (RAM freed, agents restored, reboot safety net, etc.) —
-things the automated suite can't exercise safely.
+[`docs/manual-tests.md`](docs/manual-tests.md) lists the checks that need two real
+Macs: RAM actually freed, agents actually restored, reboot mid-`on`, SSH-only
+session. The automated suite can't safely run these.
+
+## Roadmap
+
+- [ ] Detect RAM and pick `CFG_WIRED_MB` automatically
+- [ ] Better "free RAM" metric (count inactive + purgeable, not only `Pages free`)
+- [ ] User-editable whitelist in `config`
+- [ ] Signed + notarized menu bar app build
+- [ ] Linux/Windows client script
+
+## License
+
+[MIT](LICENSE)
