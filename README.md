@@ -113,7 +113,7 @@ LM Studio (`LM Studio` / `lmstudio` / `lms`), or `Terminal` / `iTerm`.
 
 - macOS 14+ on Apple Silicon (the server Mac)
 - [LM Studio](https://lmstudio.ai) with its `lms` CLI on `PATH`
-- A second Mac (or anything with `ssh`) as the client
+- A second machine with `ssh` as the client: macOS, Linux, or Windows 10+
 - `bats-core` to run tests, `xcodegen` to build the menu bar app
 
 ## Install
@@ -151,12 +151,20 @@ llm-mode {on|off|status|serve-stop} [--dry-run] [--relaunch]
 ### Client
 
 ```bash
-client/client-connect.sh you@server.local [port]
+client/client-connect.sh you@server.local [port]          # macOS / Linux
+```
+
+```powershell
+.\client\client-connect.ps1 you@server.local [port]       # Windows (PowerShell)
 ```
 
 Or set `LLM_HOST` / `LLM_PORT`. The script opens `ssh -N -L 1234:localhost:1234`,
 waits until `/v1/models` responds, and keeps the tunnel open until you press
-Ctrl-C. Then point any OpenAI-compatible client at `http://localhost:1234/v1`
+Ctrl-C. It exits early if `ssh` fails.
+
+- **Linux:** `server.local` names need mDNS (`avahi-daemon` + `nss-mdns`), or use the server's IP.
+- **Windows:** uses the built-in OpenSSH client (Settings → Apps → Optional features → OpenSSH Client).
+  If script execution is blocked, run `powershell -ExecutionPolicy Bypass -File client\client-connect.ps1 ...`. Then point any OpenAI-compatible client at `http://localhost:1234/v1`
 (the API key can be anything, e.g. `local`):
 
 - **Continue / Cline:** API base URL `http://localhost:1234/v1`
@@ -198,7 +206,8 @@ most quantized models.
 
 ```
 bin/llm-mode              The CLI. All logic lives here, and it works the same over SSH.
-client/client-connect.sh  Opens the tunnel from the client Mac.
+client/client-connect.sh  Opens the tunnel from a macOS/Linux client.
+client/client-connect.ps1 Same for Windows (PowerShell + built-in OpenSSH).
 app/                      SwiftUI MenuBarExtra. Runs the CLI in the background, has no logic of its own.
 install.sh                Symlink + scoped sudoers + Remote Login.
 tests/                    bats suite, each test gets its own temp state dir.
@@ -223,7 +232,7 @@ session. The automated suite can't safely run these.
 - [ ] Better "free RAM" metric (count inactive + purgeable, not only `Pages free`)
 - [ ] User-editable whitelist in `config`
 - [ ] Signed + notarized menu bar app build
-- [ ] Linux/Windows client script
+- [x] Linux/Windows client script
 
 ## License
 
