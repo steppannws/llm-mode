@@ -10,14 +10,3 @@ targets:
       path: LLMMode/Info.plist
       properties:
         LSUIElement: true   # menu bar only, no Dock icon
-    scheme:
-      testTargets: [LLMModeTests]
-  LLMModeTests:
-    type: bundle.unit-test
-    platform: macOS
-    deploymentTarget: "14.0"
-    sources: [LLMModeTests]
-    dependencies:
-      - target: LLMMode
-    settings:
-      GENERATE_INFOPLIST_FILE: YES

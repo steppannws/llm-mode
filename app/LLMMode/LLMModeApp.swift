@@ -12,16 +12,17 @@ struct LLMModeApp: App {
     }
 
     var body: some Scene {
-        MenuBarExtra {
-            PopoverView().environmentObject(status)
-        } label: {
-            Image(systemName: status.busy ? "ellipsis.circle"
-                              : status.status?.serverUp == true ? "brain.fill" : "brain")
+        MenuBarExtra("LLM", systemImage: status.serverUp ? "brain.fill" : "brain") {
+            Text("\(status.backend) · \(status.model) — \(status.serverUp ? "up" : "down")")
+            Text("free RAM: \(status.freeRAM)")
+            Text("host: \(status.host)")
+            Divider()
+            Button("LLM Mode ON")  { status.run("on") }.disabled(status.busy)
+            Button("LLM Mode OFF") { status.run("off") }.disabled(status.busy)
+            Button("Refresh")      { status.refresh() }
+            Divider()
+            Button("Quit") { NSApplication.shared.terminate(nil) }
         }
-        .menuBarExtraStyle(.window)
-
-        Settings {
-            SettingsView().environmentObject(status)
-        }
+        .onChange(of: status.busy) { _, _ in status.refresh() }
     }
 }
