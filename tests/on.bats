@@ -2,6 +2,7 @@ load helpers
 
 @test "on --dry-run mentions quit, bootout, mdutil, sysctl" {
   stub_memsize 25769803776
+  echo 'CFG_QUIT_APPS=1' > "$LLM_MODE_DIR/config"
   run llm-mode on --dry-run
   [ "$status" -eq 0 ]
   [[ "$output" == *"osascript"* ]]

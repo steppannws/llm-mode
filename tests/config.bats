@@ -13,3 +13,12 @@ load helpers
   [[ "$output" == *"model: my-model"* ]]
   [[ "$output" == *"port: 9999"* ]]
 }
+
+@test "single-quoted config values (menu bar app format) load verbatim" {
+  cat > "$LLM_MODE_DIR/config" <<'EOF2'
+CFG_MODEL='it'\''s $HOME "x" $(touch pwned)'
+EOF2
+  run llm-mode status
+  [[ "$output" == *'model: it'"'"'s $HOME "x" $(touch pwned)'* ]] || false
+  [ ! -e pwned ]
+}
