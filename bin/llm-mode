@@ -9,6 +9,7 @@ PID_FILE="$STATE_DIR/server.pid"
 SERVER_LOG="$STATE_DIR/server.log"
 DRY_RUN="${DRY_RUN:-0}"
 RELAUNCH=0
+JSON=0
 
 mkdir -p "$STATE_DIR"
 
@@ -20,6 +21,7 @@ CFG_MODEL=""           # empty = the active backend's default model
 CFG_PORT=1234
 CFG_WIRED_MB=""        # empty = total RAM - CFG_RESERVE_MB
 CFG_RESERVE_MB=4096    # RAM left for macOS when CFG_WIRED_MB is auto
+CFG_QUIT_APPS=0        # 1 = quit visible apps on `on` (0 = leave them running)
 CFG_WHITELIST_EXTRA="" # extra regex alternation, e.g. 'Ghostty|com\.mitchellh\.ghostty'
 CFG_SERVER_ARGS=""     # extra flags for spawned llamacpp/mlx servers, e.g. '-c 32768'
 CFG_SERVER_CMD=""      # custom backend: one command serving /v1 on CFG_PORT
@@ -29,7 +31,7 @@ CFG_START_TIMEOUT=120  # seconds to wait for /v1/models after start
 [[ -f "$STATE_DIR/config" ]] && source "$STATE_DIR/config"
 
 # the active backend appends its own entries in preflight
-WHITELIST_RE='sshd|loginwindow|WindowServer|mDNSResponder|notifyd|cfprefsd|systemstats|powerd|configd|distnoted|com\.apple\.Finder|Terminal|iTerm'
+WHITELIST_RE='sshd|loginwindow|WindowServer|mDNSResponder|notifyd|cfprefsd|systemstats|powerd|configd|distnoted|com\.apple\.finder|Terminal|iTerm|com\.googlecode\.iterm2'
 [[ -n "$CFG_WHITELIST_EXTRA" ]] && WHITELIST_RE="$WHITELIST_RE|$CFG_WHITELIST_EXTRA"
 
 BACKEND=""
@@ -38,20 +40,21 @@ RESOLVE_ERR=""
 
 log() { printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*" >>"$LOG_FILE"; }
 die() { echo "llm-mode: $*" >&2; exit 1; }
-usage() { echo "usage: llm-mode {on|off|status|serve-stop} [--dry-run] [--relaunch]" >&2; exit 2; }
+usage() { echo "usage: llm-mode {on|off|status|models|serve-stop} [--dry-run] [--relaunch] [--json]" >&2; exit 2; }
 
 run() {
   log "RUN $*"
   if [[ $DRY_RUN -eq 1 ]]; then echo "[dry-run] $*"; else "$@"; fi
 }
 
+total_mb() { echo $(( $(sysctl -n hw.memsize) / 1048576 )); }
+
 # total RAM minus reserve, unless CFG_WIRED_MB is set explicitly
 wired_mb() {
   if [[ -n "$CFG_WIRED_MB" ]]; then echo "$CFG_WIRED_MB"; return; fi
-  local total_mb
-  total_mb=$(( $(sysctl -n hw.memsize) / 1048576 ))
-  (( total_mb > CFG_RESERVE_MB )) || die "CFG_RESERVE_MB ($CFG_RESERVE_MB) >= total RAM (${total_mb}MB)"
-  echo $(( total_mb - CFG_RESERVE_MB ))
+  local total; total=$(total_mb)
+  (( total > CFG_RESERVE_MB )) || die "CFG_RESERVE_MB ($CFG_RESERVE_MB) >= total RAM (${total}MB)"
+  echo $(( total - CFG_RESERVE_MB ))
 }
 
 # memory reclaimable without swapping: free + speculative + inactive pages
@@ -63,6 +66,27 @@ free_ram_mb() {
     /^Pages inactive/    { n += $3 }
     END { printf "%.0f", n * ps / 1048576 }'
 }
+
+# resident memory of whatever listens on CFG_PORT (the model lives in that process)
+server_mem_mb() {
+  local pids; pids=$(lsof -nP -t -iTCP:"$CFG_PORT" -sTCP:LISTEN 2>/dev/null | sort -u | paste -sd, - || true)
+  [[ -n "$pids" ]] || { echo 0; return; }
+  # ps exits 1 when any pid is gone; never fail (callers run under set -e)
+  { ps -o rss= -p "$pids" 2>/dev/null || true; } | awk '{ kb += $1 } END { printf "%.0f", kb / 1024 }'
+}
+
+host_name() { echo "$(scutil --get LocalHostName 2>/dev/null || hostname).local"; }
+
+# JSON string literal, or null when empty
+json_str() {
+  [[ -n "$1" ]] || { printf 'null'; return; }
+  local s=${1//\\/\\\\}
+  s=${s//\"/\\\"}
+  printf '"%s"' "$s"
+}
+
+# digits only, else 0 — keeps JSON valid when config holds garbage
+num() { if [[ "$1" =~ ^[0-9]+$ ]]; then echo "$1"; else echo 0; fi; }
 
 state_write() { printf '%s' "$1" >"$STATE_FILE"; log "state written"; }
 
@@ -110,12 +134,13 @@ snapshot() {
     fi
   fi
   local apps agents prev
-  apps=$(list_gui_apps | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')
+  apps="[]"
+  [[ "$CFG_QUIT_APPS" == 1 ]] && apps=$(list_gui_apps | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')
   agents=$(list_agents | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')
   prev=$(sysctl -n iogpu.wired_limit_mb 2>/dev/null || echo 0)
   local dry_field=""
   [[ $DRY_RUN -eq 1 ]] && dry_field=', "dry_run": true'
-  state_write "{\"apps\": $apps, \"agents\": $agents, \"wired_limit_prev\": \"$prev\", \"forced_kills\": [], \"backend\": \"$BACKEND\"$dry_field}"
+  state_write "{\"apps\": $apps, \"agents\": $agents, \"wired_limit_prev\": \"$prev\", \"forced_kills\": [], \"backend\": \"$BACKEND\", \"started_at\": $(date +%s)$dry_field}"
 }
 
 quit_apps() {
@@ -332,6 +357,20 @@ be_custom_stop() {
   fi
 }
 
+be_lmstudio_models() {
+  lms ls --json 2>/dev/null | python3 -c '
+import json, sys
+for m in json.load(sys.stdin):
+    if m.get("type") == "llm": print(m["modelKey"])' 2>/dev/null || true
+}
+be_ollama_models() { ollama list 2>/dev/null | awk 'NR > 1 && $1 { print $1 }' || true; }
+be_llamacpp_models() {
+  local d
+  for d in "$HOME/.cache/llama.cpp" "$HOME/models" "$HOME/.lmstudio/models"; do
+    [[ -d "$d" ]] && find "$d" -name '*.gguf' ! -name 'mmproj*' 2>/dev/null
+  done | sort || true
+}
+
 port_busy() { lsof -nP -iTCP:"$CFG_PORT" -sTCP:LISTEN >/dev/null 2>&1; }
 
 # everything that can refuse `on` runs here, before snapshot touches anything
@@ -441,8 +480,47 @@ cmd_status() {
   echo "port: $CFG_PORT"
   echo "wired_limit_mb: $(wired_mb)"
   if server_health; then echo "server: up"; else echo "server: down"; fi
-  echo "host: $(scutil --get LocalHostName 2>/dev/null || hostname).local"
+  echo "host: $(host_name)"
   echo "free RAM: $(free_ram_mb)MB"
+}
+cmd_status_json() {
+  resolve_backend "$CFG_BACKEND" || MODEL="${CFG_MODEL:-$(backend model)}"
+  local mode=off started=null
+  if [[ -f "$STATE_FILE" ]] && [[ ! "$(state_get dry_run)" =~ ^(True|true|1)$ ]]; then
+    mode=on
+    started=$(state_get started_at); [[ "$started" =~ ^[0-9]+$ ]] || started=null
+  fi
+  local server=down model_mb=0
+  if server_health; then server=up; model_mb=$(server_mem_mb); fi
+  local b have backends="" sep=""
+  for b in $AUTO_ORDER; do
+    have=false; command -v "$(backend_bin "$b")" >/dev/null 2>&1 && have=true
+    backends+="$sep\"$b\":$have"; sep=","
+  done
+  local wired; wired=$(wired_mb 2>/dev/null) || wired=0
+  printf '{"backend":%s,"model":%s,"port":%s,"server":"%s","host":%s,"mode":"%s","started_at":%s,' \
+    "$(json_str "$BACKEND")" "$(json_str "$MODEL")" "$(num "$CFG_PORT")" "$server" \
+    "$(json_str "$(host_name)")" "$mode" "$started"
+  printf '"mem":{"total_mb":%s,"wired_limit_mb":%s,"reserve_mb":%s,"model_mb":%s,"free_mb":%s},"backends":{%s}}\n' \
+    "$(total_mb)" "$(num "$wired")" "$(num "$CFG_RESERVE_MB")" "$(num "$model_mb")" "$(num "$(free_ram_mb)")" "$backends"
+}
+# what `on` would quit, as display names; no side effects
+cmd_on_preview() {
+  preflight
+  local bid name list="" sep=""
+  if [[ "$CFG_QUIT_APPS" == 1 ]]; then
+    while IFS= read -r bid; do
+      [[ -n "$bid" ]] || continue
+      name=$(osascript -e "tell application \"System Events\" to get name of first process whose bundle identifier is \"$bid\"" 2>/dev/null || true)
+      list+="$sep$(json_str "${name:-$bid}")"; sep=","
+    done < <(list_gui_apps)
+  fi
+  printf '{"quit":[%s]}\n' "$list"
+}
+# model ids the resolved backend can serve, one per line
+cmd_models() {
+  resolve_backend "$CFG_BACKEND" || die "$RESOLVE_ERR"
+  backend models
 }
 cmd_serve_stop() {
   resolve_backend "$CFG_BACKEND" || [[ -n "$BACKEND" ]] || die "$RESOLVE_ERR"
@@ -457,14 +535,22 @@ main() {
     case "$arg" in
       --dry-run)  DRY_RUN=1 ;;
       --relaunch) RELAUNCH=1 ;;
+      --json)     JSON=1 ;;
       *) usage ;;
     esac
   done
 
   case "$sub" in
-    on)         cmd_on ;;
+    on)
+      if [[ $JSON -eq 1 ]]; then
+        [[ $DRY_RUN -eq 1 ]] || usage
+        cmd_on_preview
+      else
+        cmd_on
+      fi ;;
+    models)     cmd_models ;;
     off)        cmd_off ;;
-    status)     cmd_status ;;
+    status)     if [[ $JSON -eq 1 ]]; then cmd_status_json; else cmd_status; fi ;;
     serve-stop) cmd_serve_stop ;;
     *)          usage ;;
   esac
