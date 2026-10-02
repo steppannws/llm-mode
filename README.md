@@ -5,13 +5,13 @@
 **Turn a spare Mac into a local LLM coding server with one command, and get it back with another.**
 
 Quits your apps, parks background services, raises the GPU memory limit, starts
-LM Studio, and serves the model to your other Mac over an SSH tunnel.
-`llm-mode off` puts everything back.
+your local LLM server (LM Studio, Ollama, llama.cpp or MLX), and serves the model
+to your other Mac over an SSH tunnel. `llm-mode off` puts everything back.
 
 ![macOS 14+](https://img.shields.io/badge/macOS-14+-black?style=flat-square&logo=apple)
 ![Apple Silicon](https://img.shields.io/badge/Apple_Silicon-required-555?style=flat-square&logo=apple)
 ![Bash](https://img.shields.io/badge/core-bash-4EAA25?style=flat-square&logo=gnubash&logoColor=white)
-![Tests 23](https://img.shields.io/badge/bats_tests-23-success?style=flat-square)
+![Tests 61](https://img.shields.io/badge/bats_tests-61-success?style=flat-square)
 ![License MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)
 
 <!-- Read the story: [TITLE](MEDIUM_URL) -->
@@ -38,7 +38,7 @@ reads those notes back and undoes each step.
 ```
 ┌──────────── laptop ────────────┐           ┌────────── server Mac ──────────┐
 │ Zed / Continue / Cline / aider │           │  llm-mode on                   │
-│   → http://localhost:1234/v1   │── ssh -L ─│  LM Studio  → localhost:1234   │
+│   → http://localhost:1234/v1   │── ssh -L ─│  LLM server → localhost:1234   │
 └────────────────────────────────┘           └────────────────────────────────┘
 ```
 
@@ -65,16 +65,51 @@ name, server up/down, free RAM and hostname. It runs the same CLI.
 
 | # | Step | How |
 |---|------|-----|
-| 1 | **Snapshot** | Running GUI apps, enabled user launch agents, current `iogpu.wired_limit_mb` go to `~/.llm-mode/state.json`, *before anything changes* |
+| 1 | **Snapshot** | Running GUI apps, enabled user launch agents, current `iogpu.wired_limit_mb` and the active backend go to `~/.llm-mode/state.json`, *before anything changes* |
 | 2 | **Quit apps** | AppleScript `quit`, then `kill -9` for anything still alive after 10s |
 | 3 | **Park agents** | `launchctl bootout` + `disable` user-installed agents (plist in `~/Library/LaunchAgents`) |
 | 4 | **Pause services** | Spotlight (`mdutil -a -i off`), Time Machine (`tmutil disable`), `bird` / `cloudd` / `photoanalysisd` |
 | 5 | **Raise GPU limit** | `sysctl iogpu.wired_limit_mb=<total RAM − 4 GB>` (20480 on a 24 GB machine); the reserve is configurable |
-| 6 | **Serve** | `lms server start`, `lms load <model>`, then polls `/v1/models` until it responds |
+| 6 | **Serve** | Starts the active [backend](#backends) on `CFG_PORT`, loads the model, then polls `/v1/models` until it responds |
 
-`off` goes through `state.json` in reverse: stops the server, restores the old
+`off` goes through `state.json` in reverse: stops the server it started (even if you changed backend in config since), restores the old
 wired limit, re-enables and restarts agents, turns Spotlight and Time Machine back
 on, and with `--relaunch` reopens the apps it quit.
+
+## Backends
+
+llm-mode doesn't serve models itself. It starts one of these servers and makes
+sure it has the memory it needs. All of them expose the same OpenAI-compatible
+API on `CFG_PORT`, so clients don't care which one runs.
+
+| `CFG_BACKEND` | Server | Default model | Started with |
+|---|---|---|---|
+| `lmstudio` | [LM Studio](https://lmstudio.ai) (`lms`) | `qwen3-coder-30b-a3b` | `lms server start` + `lms load` |
+| `ollama` | [Ollama](https://ollama.com) | `qwen3-coder:30b` | `ollama serve`, then `ollama pull` + preload |
+| `llamacpp` | [llama.cpp](https://github.com/ggml-org/llama.cpp) (`llama-server`) | `unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Q4_K_M` | `llama-server -hf <repo>` (or `-m <file>.gguf`) |
+| `mlx` | [MLX LM](https://github.com/ml-explore/mlx-lm) (`mlx_lm.server`) | `mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit` | `mlx_lm.server --model <repo>` |
+| `custom` | anything OpenAI-compatible | — | `CFG_SERVER_CMD` |
+
+With the default `CFG_BACKEND=auto`, llm-mode uses the first one installed, in
+the order above. Besides your `PATH`, it looks in `/opt/homebrew/bin`,
+`/usr/local/bin`, `~/.lmstudio/bin` and `~/.local/bin`, so the menu bar app finds
+the same servers as your shell. Set `CFG_MODEL` to use a different model with
+whichever backend is active.
+
+Ollama, llama.cpp, MLX and custom servers run in the background under llm-mode.
+Their output goes to `~/.llm-mode/server.log` and their pid to `~/.llm-mode/server.pid`.
+The first start of llama.cpp or MLX downloads the model, so it can take a while;
+raise `CFG_START_TIMEOUT` if needed.
+
+Anything else (vLLM, koboldcpp, …) works as `custom`. `CFG_SERVER_CMD` must be a
+single command that serves `/v1` on `CFG_PORT`:
+
+```bash
+# ~/.llm-mode/config
+CFG_BACKEND=custom
+CFG_SERVER_CMD='vllm serve Qwen/Qwen3-Coder-30B-A3B-Instruct --host 127.0.0.1 --port 1234'
+CFG_MODEL=Qwen3-Coder-30B   # label shown in status
+```
 
 ## Safety
 
@@ -95,14 +130,18 @@ being able to undo that:
 - **sudo is limited to five commands.** `install.sh` grants `NOPASSWD` for exactly
   `sysctl iogpu.wired_limit_mb=*`, `mdutil -a -i off|on`, `tmutil disable|enable`.
   The grant is checked with `visudo -c -f` before it's copied into `/etc/sudoers.d/`.
-- **The API is never exposed on the LAN.** LM Studio listens on localhost only. The
+- **The API is never exposed on the LAN.** Every backend is bound to localhost. The
   client reaches it over SSH, so the only open port is port 22.
+- **It won't start on a busy port.** If something already listens on `CFG_PORT`,
+  `on` stops before changing anything, so the health check can't mistake another
+  process for your model.
 
 ### Whitelist
 
 `on` never touches `sshd`, `loginwindow`, `WindowServer`, `mDNSResponder`,
 `notifyd`, `cfprefsd`, `systemstats`, `powerd`, `configd`, `distnoted`, Finder,
-LM Studio (`LM Studio` / `lmstudio` / `lms`), or `Terminal` / `iTerm`. Add your own
+or `Terminal` / `iTerm`. LM Studio is also kept when it's the active backend; with
+any other backend it gets quit like other apps, so its memory is freed. Add your own
 with `CFG_WHITELIST_EXTRA` in `config` (see [Configuration](#configuration)).
 
 > [!WARNING]
@@ -114,7 +153,9 @@ with `CFG_WHITELIST_EXTRA` in `config` (see [Configuration](#configuration)).
 ## Requirements
 
 - macOS 14+ on Apple Silicon (the server Mac)
-- [LM Studio](https://lmstudio.ai) with its `lms` CLI on `PATH`
+- One LLM server on `PATH`: [LM Studio](https://lmstudio.ai) (`lms`), [Ollama](https://ollama.com),
+  [llama.cpp](https://github.com/ggml-org/llama.cpp) (`llama-server`), or [MLX LM](https://github.com/ml-explore/mlx-lm)
+  (`mlx_lm.server`). See [Backends](#backends).
 - A second machine with `ssh` as the client: macOS, Linux, or Windows 10+
 - `bats-core` to run tests, `xcodegen` to build the menu bar app
 
@@ -150,8 +191,8 @@ llm-mode {on|off|status|serve-stop} [--dry-run] [--relaunch]
 |---|---|
 | `on` | Snapshot, free memory, raise GPU limit, start server, load model. Prints free RAM before/after and an API health check. |
 | `off` | Restore everything from `state.json`, best-effort. Add `--relaunch` to reopen the apps it quit. |
-| `status` | Model, port, wired limit, server up/down, LAN hostname, free RAM (free + speculative + inactive pages). |
-| `serve-stop` | Stop only the LM Studio server. Nothing else is touched. |
+| `status` | Backend, model, port, wired limit, server up/down, LAN hostname, free RAM (free + speculative + inactive pages). |
+| `serve-stop` | Stop only the LLM server. Nothing else is touched. |
 | `--dry-run` | Print every action instead of running it. |
 
 ### Client
@@ -208,24 +249,31 @@ Everything lives in `~/.llm-mode/`:
 | `config` | Optional overrides, sourced as shell |
 | `state.json` | Snapshot written by `on`, consumed and deleted by `off` |
 | `log` | Append-only, timestamped record of every command run |
+| `server.log` / `server.pid` | Output and pid of a backend llm-mode runs in the background |
 
 ```bash
 # ~/.llm-mode/config (defaults shown)
-CFG_MODEL=qwen3-coder-30b-a3b
+CFG_BACKEND=auto       # auto | lmstudio | ollama | llamacpp | mlx | custom
+CFG_MODEL=             # empty = the backend's default (see Backends)
 CFG_PORT=1234
-CFG_RESERVE_MB=4096  # RAM left for macOS; wired limit = total RAM - this
-CFG_WIRED_MB=        # set to pin an exact wired limit instead
-CFG_WHITELIST_EXTRA= # extra regex, e.g. 'Ghostty|com\.mitchellh\.ghostty'
+CFG_RESERVE_MB=4096    # RAM left for macOS; wired limit = total RAM - this
+CFG_WIRED_MB=          # set to pin an exact wired limit instead
+CFG_WHITELIST_EXTRA=   # extra regex, e.g. 'Ghostty|com\.mitchellh\.ghostty'
+CFG_SERVER_ARGS=       # extra flags for llama.cpp / MLX, e.g. '-c 32768'
+CFG_SERVER_CMD=        # custom backend only
+CFG_SERVER_STOP_CMD=   # custom backend only, optional (default: kill the pid)
+CFG_START_TIMEOUT=120  # seconds to wait for the API after start
 ```
 
-**Model storage:** models live wherever LM Studio stores them. If that's an
+**Model storage:** models live wherever your backend stores them (LM Studio's
+models folder, `~/.ollama`, the Hugging Face cache for llama.cpp `-hf` and MLX). If that's an
 external drive, format it **APFS or exFAT**. FAT32's 4 GB file limit blocks
 most quantized models.
 
 ## Architecture
 
 ```
-bin/llm-mode              The CLI. All logic lives here, and it works the same over SSH.
+bin/llm-mode              The CLI. All logic lives here, including one adapter per backend, and it works the same over SSH.
 client/client-connect.sh  Opens the tunnel from a macOS/Linux client.
 client/client-connect.ps1 Same for Windows (PowerShell + built-in OpenSSH).
 app/                      SwiftUI MenuBarExtra. Runs the CLI in the background, has no logic of its own.
@@ -239,7 +287,7 @@ SSH session on your phone, and the Swift app has nothing of its own to test.
 ## Testing
 
 ```bash
-bats tests/   # 31 tests; changes to the system only ever run as --dry-run
+bats tests/   # 61 tests; changes to the system only ever run as --dry-run
 ```
 
 [`docs/manual-tests.md`](docs/manual-tests.md) lists the checks that need two real
@@ -253,6 +301,7 @@ session. The automated suite can't safely run these.
 - [x] User-editable whitelist in `config`
 - [x] Signed + notarized menu bar app build
 - [x] Linux/Windows client script
+- [x] Ollama, llama.cpp, MLX and custom backends
 
 ## License
 

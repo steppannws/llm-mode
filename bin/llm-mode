@@ -1,25 +1,40 @@
 #!/usr/bin/env bash
-# bin/llm-mode — free RAM, run LM Studio server, restore on demand.
+# bin/llm-mode — free RAM, run a local LLM server, restore on demand.
 set -euo pipefail
 
 STATE_DIR="${LLM_MODE_DIR:-$HOME/.llm-mode}"
 STATE_FILE="$STATE_DIR/state.json"
 LOG_FILE="$STATE_DIR/log"
+PID_FILE="$STATE_DIR/server.pid"
+SERVER_LOG="$STATE_DIR/server.log"
 DRY_RUN="${DRY_RUN:-0}"
 RELAUNCH=0
 
 mkdir -p "$STATE_DIR"
 
-CFG_MODEL="qwen3-coder-30b-a3b"
+# the menu bar app runs with launchd's minimal PATH; add where servers usually live
+PATH="$PATH:${LLM_MODE_EXTRA_PATH-/opt/homebrew/bin:/usr/local/bin:$HOME/.lmstudio/bin:$HOME/.local/bin}"
+
+CFG_BACKEND=auto       # auto | lmstudio | ollama | llamacpp | mlx | custom
+CFG_MODEL=""           # empty = the active backend's default model
 CFG_PORT=1234
 CFG_WIRED_MB=""        # empty = total RAM - CFG_RESERVE_MB
 CFG_RESERVE_MB=4096    # RAM left for macOS when CFG_WIRED_MB is auto
 CFG_WHITELIST_EXTRA="" # extra regex alternation, e.g. 'Ghostty|com\.mitchellh\.ghostty'
+CFG_SERVER_ARGS=""     # extra flags for spawned llamacpp/mlx servers, e.g. '-c 32768'
+CFG_SERVER_CMD=""      # custom backend: one command serving /v1 on CFG_PORT
+CFG_SERVER_STOP_CMD="" # custom backend: optional stop command (default: kill pid)
+CFG_START_TIMEOUT=120  # seconds to wait for /v1/models after start
 # shellcheck source=/dev/null
 [[ -f "$STATE_DIR/config" ]] && source "$STATE_DIR/config"
 
-WHITELIST_RE='sshd|loginwindow|WindowServer|mDNSResponder|notifyd|cfprefsd|systemstats|powerd|configd|distnoted|com\.apple\.Finder|LM Studio|lmstudio|lms|Terminal|iTerm'
+# the active backend appends its own entries in preflight
+WHITELIST_RE='sshd|loginwindow|WindowServer|mDNSResponder|notifyd|cfprefsd|systemstats|powerd|configd|distnoted|com\.apple\.Finder|Terminal|iTerm'
 [[ -n "$CFG_WHITELIST_EXTRA" ]] && WHITELIST_RE="$WHITELIST_RE|$CFG_WHITELIST_EXTRA"
+
+BACKEND=""
+MODEL=""
+RESOLVE_ERR=""
 
 log() { printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*" >>"$LOG_FILE"; }
 die() { echo "llm-mode: $*" >&2; exit 1; }
@@ -100,7 +115,7 @@ snapshot() {
   prev=$(sysctl -n iogpu.wired_limit_mb 2>/dev/null || echo 0)
   local dry_field=""
   [[ $DRY_RUN -eq 1 ]] && dry_field=', "dry_run": true'
-  state_write "{\"apps\": $apps, \"agents\": $agents, \"wired_limit_prev\": \"$prev\", \"forced_kills\": []$dry_field}"
+  state_write "{\"apps\": $apps, \"agents\": $agents, \"wired_limit_prev\": \"$prev\", \"forced_kills\": [], \"backend\": \"$BACKEND\"$dry_field}"
 }
 
 quit_apps() {
@@ -155,12 +170,189 @@ apply_sysctl() {
   run sudo sysctl "iogpu.wired_limit_mb=$mb" || log "sysctl step failed: apply $mb"
 }
 
-server_start() {
-  run lms server start --port "$CFG_PORT"
-  run lms load "$CFG_MODEL"
+# --- backends ----------------------------------------------------------------
+# Each backend is a set of be_<name>_<verb> functions: model, start, stop and
+# optionally whitelist. `backend <verb>` calls the active one; a verb the
+# backend doesn't define is a no-op.
+AUTO_ORDER="lmstudio ollama llamacpp mlx"
+KNOWN_BACKENDS="$AUTO_ORDER custom"
+
+backend() {
+  local fn="be_${BACKEND}_$1"; shift
+  declare -F "$fn" >/dev/null || return 0
+  "$fn" "$@"
 }
 
-server_stop() { run lms server stop; }
+backend_bin() {
+  case "$1" in
+    lmstudio) echo lms ;;
+    ollama)   echo ollama ;;
+    llamacpp) echo llama-server ;;
+    mlx)      echo mlx_lm.server ;;
+  esac
+}
+
+is_known_backend() { [[ " $KNOWN_BACKENDS " == *" $1 "* ]]; }
+
+# alive and not a zombie
+proc_alive() {
+  local s; s=$(ps -p "$1" -o stat= 2>/dev/null) || return 1
+  [[ -n "$s" && "$s" != Z* ]]
+}
+
+# start time in a fixed format: `on` and `off` may run under different locales/TZ
+proc_start() { LC_ALL=C TZ=UTC ps -p "$1" -o lstart= 2>/dev/null; }
+
+# pid of our spawned server, only if server.pid still describes a live process
+# with the same start time (a recycled pid after reboot must never be killed)
+server_pid() {
+  [[ -f "$PID_FILE" ]] || return 0
+  local pid started
+  pid=$(sed -n 1p "$PID_FILE"); started=$(sed -n 2p "$PID_FILE")
+  [[ "$pid" =~ ^[0-9]+$ && -n "$started" ]] || return 0
+  proc_alive "$pid" || return 0
+  [[ "$(proc_start "$pid")" == "$started" ]] || return 0
+  echo "$pid"
+}
+
+SPAWNED_PID=""
+START_WARN=""   # set by a backend whose server is up but couldn't load the model
+spawn_server() {
+  local running; running=$(server_pid)
+  if [[ -n "$running" ]]; then echo "server already running (pid $running)"; return 0; fi
+  log "RUN nohup $*"
+  if [[ $DRY_RUN -eq 1 ]]; then echo "[dry-run] nohup $* >>$SERVER_LOG 2>&1 &"; return 0; fi
+  nohup "$@" >>"$SERVER_LOG" 2>&1 </dev/null &
+  SPAWNED_PID=$!
+  printf '%s\n%s\n' "$SPAWNED_PID" "$(proc_start "$SPAWNED_PID")" >"$PID_FILE"
+}
+
+kill_server() {
+  local pid; pid=$(server_pid)
+  if [[ -n "$pid" ]]; then
+    run kill "$pid" || true
+    if [[ $DRY_RUN -eq 0 ]]; then
+      local _
+      for _ in $(seq 1 10); do proc_alive "$pid" || break; sleep 1; done
+      if proc_alive "$pid"; then run kill -9 "$pid" || true; fi
+    fi
+  elif [[ -f "$PID_FILE" ]]; then
+    log "stale server pid file, nothing to kill"
+  fi
+  run rm -f "$PID_FILE"
+}
+
+# poll /v1/models; give up on timeout or as soon as the server we spawned dies
+wait_health() {
+  local deadline=$((SECONDS + CFG_START_TIMEOUT))
+  until server_health; do
+    if [[ -n "$SPAWNED_PID" ]] && ! proc_alive "$SPAWNED_PID"; then return 1; fi
+    (( SECONDS < deadline )) || return 1
+    sleep 2
+  done
+}
+
+# sets BACKEND and MODEL. On failure sets RESOLVE_ERR and returns 1; BACKEND
+# stays set for an explicit name so status can still show it.
+resolve_backend() {
+  local name="$1" b
+  BACKEND=""; MODEL=""; RESOLVE_ERR=""
+  if [[ "$name" == auto ]]; then
+    for b in $AUTO_ORDER; do
+      if command -v "$(backend_bin "$b")" >/dev/null 2>&1; then BACKEND=$b; break; fi
+    done
+    if [[ -z "$BACKEND" ]]; then
+      RESOLVE_ERR="no LLM server found on PATH. Install one of: lms (LM Studio, lmstudio.ai), ollama (brew install ollama), llama-server (brew install llama.cpp), mlx_lm.server (pip install mlx-lm)"
+      return 1
+    fi
+  elif ! is_known_backend "$name"; then
+    RESOLVE_ERR="unknown CFG_BACKEND '$name' (valid: auto $KNOWN_BACKENDS)"
+    return 1
+  else
+    BACKEND=$name
+    if [[ "$BACKEND" == custom ]]; then
+      if [[ -z "$CFG_SERVER_CMD" ]]; then
+        RESOLVE_ERR="CFG_BACKEND=custom needs CFG_SERVER_CMD in $STATE_DIR/config"
+        return 1
+      fi
+    elif ! command -v "$(backend_bin "$BACKEND")" >/dev/null 2>&1; then
+      RESOLVE_ERR="$(backend_bin "$BACKEND") not found on PATH (CFG_BACKEND=$BACKEND)"
+      return 1
+    fi
+  fi
+  MODEL="${CFG_MODEL:-$(backend model)}"
+}
+
+be_lmstudio_model()     { echo "qwen3-coder-30b-a3b"; }
+be_lmstudio_whitelist() { echo 'LM Studio|lmstudio|lms'; }
+be_lmstudio_start() {
+  run lms server start --port "$CFG_PORT"
+  run lms load "$MODEL"
+}
+be_lmstudio_stop() { run lms server stop; }
+
+be_ollama_model() { echo "qwen3-coder:30b"; }
+be_ollama_start() {
+  spawn_server env OLLAMA_HOST="127.0.0.1:$CFG_PORT" OLLAMA_KEEP_ALIVE=-1 ollama serve
+  if [[ $DRY_RUN -eq 0 ]]; then wait_health || return 0; fi   # cmd_on reports the timeout
+  if ! run env OLLAMA_HOST="127.0.0.1:$CFG_PORT" ollama pull "$MODEL" \
+    || ! run curl -sf -m 600 -o /dev/null "http://127.0.0.1:$CFG_PORT/api/generate" -d "{\"model\": \"$MODEL\"}"; then
+    START_WARN="ollama could not load '$MODEL'"
+    log "$START_WARN"
+    echo "WARNING: $START_WARN (see $SERVER_LOG)"
+  fi
+}
+be_ollama_stop() { kill_server; }
+
+be_llamacpp_model() { echo "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Q4_K_M"; }
+be_llamacpp_start() {
+  local src=(-hf "$MODEL")
+  [[ "$MODEL" == *.gguf ]] && src=(-m "$MODEL")
+  # shellcheck disable=SC2086 # CFG_SERVER_ARGS is word-split on purpose
+  spawn_server llama-server "${src[@]}" --host 127.0.0.1 --port "$CFG_PORT" $CFG_SERVER_ARGS
+}
+be_llamacpp_stop() { kill_server; }
+
+be_mlx_model() { echo "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit"; }
+be_mlx_start() {
+  # shellcheck disable=SC2086 # CFG_SERVER_ARGS is word-split on purpose
+  spawn_server mlx_lm.server --model "$MODEL" --host 127.0.0.1 --port "$CFG_PORT" $CFG_SERVER_ARGS
+}
+be_mlx_stop() { kill_server; }
+
+# CFG_SERVER_CMD must be a single command: exec makes the tracked pid the server
+be_custom_model() { echo "custom"; }
+be_custom_start() { spawn_server bash -c "exec $CFG_SERVER_CMD"; }
+be_custom_stop() {
+  if [[ -n "$CFG_SERVER_STOP_CMD" ]]; then
+    run bash -c "$CFG_SERVER_STOP_CMD"
+    run rm -f "$PID_FILE"
+  else
+    kill_server
+  fi
+}
+
+port_busy() { lsof -nP -iTCP:"$CFG_PORT" -sTCP:LISTEN >/dev/null 2>&1; }
+
+# everything that can refuse `on` runs here, before snapshot touches anything
+preflight() {
+  resolve_backend "$CFG_BACKEND" || die "$RESOLVE_ERR"
+  local wl; wl=$(backend whitelist)
+  [[ -z "$wl" ]] || WHITELIST_RE="$WHITELIST_RE|$wl"
+
+  local active=""
+  if [[ -f "$STATE_FILE" ]] && [[ ! "$(state_get dry_run)" =~ ^(True|true|1)$ ]]; then
+    active=$(state_get backend); active=${active:-lmstudio}
+    [[ "$active" == "$BACKEND" ]] \
+      || die "state.json belongs to a '$active' session; run 'llm-mode off' before switching to '$BACKEND'"
+  fi
+
+  # lms handles an already-running LM Studio server itself; a second `on` of an
+  # active session finds its own server on the port
+  if [[ $DRY_RUN -eq 0 && "$BACKEND" != lmstudio && -z "$active" ]] && port_busy; then
+    die "port $CFG_PORT already in use (stop whatever listens there, or change CFG_PORT)"
+  fi
+}
 
 server_health() {
   curl -sf -m 2 "http://localhost:$CFG_PORT/v1/models" >/dev/null 2>&1
@@ -169,6 +361,7 @@ server_health() {
 cmd_on() {
   log "on: start"
   local wired; wired=$(wired_mb)   # fail before touching anything
+  preflight
   local before; before="$(free_ram_mb)MB"
   snapshot
   quit_apps
@@ -177,10 +370,15 @@ cmd_on() {
   apply_sysctl "$wired"
   local after; after="$(free_ram_mb)MB"
   echo "free RAM before: $before  after: $after"
-  server_start
+  backend start
   if [[ $DRY_RUN -eq 0 ]]; then
-    for _ in $(seq 1 30); do server_health && break; sleep 2; done
-    server_health && echo "API ready on localhost:$CFG_PORT" || echo "WARNING: API not responding"
+    if ! wait_health; then
+      echo "WARNING: API not responding on localhost:$CFG_PORT (see $SERVER_LOG and $LOG_FILE)"
+    elif [[ -n "$START_WARN" ]]; then
+      echo "WARNING: API up on localhost:$CFG_PORT, but $START_WARN"
+    else
+      echo "API ready on localhost:$CFG_PORT ($BACKEND: $MODEL)"
+    fi
   fi
   log "on: done"
 }
@@ -189,7 +387,13 @@ cmd_off() {
   log "off: start"
   local fails=0
 
-  server_stop || { log "restore step failed: server_stop"; fails=$((fails+1)); }
+  # stop the backend this session started, even if config changed since
+  BACKEND=$(state_get backend); BACKEND=${BACKEND:-lmstudio}
+  if is_known_backend "$BACKEND"; then
+    backend stop || { log "restore step failed: server stop ($BACKEND)"; fails=$((fails+1)); }
+  else
+    log "restore step failed: unknown backend '$BACKEND' in state"; fails=$((fails+1))
+  fi
 
   local wired_prev
   wired_prev=$(state_get wired_limit_prev)
@@ -231,29 +435,40 @@ cmd_off() {
   echo "reboot fully resets any stubborn daemons."
 }
 cmd_status() {
-  echo "model: $CFG_MODEL"
+  resolve_backend "$CFG_BACKEND" || MODEL="${CFG_MODEL:-$(backend model)}"
+  echo "backend: ${BACKEND:-none}"
+  echo "model: ${MODEL:--}"
   echo "port: $CFG_PORT"
   echo "wired_limit_mb: $(wired_mb)"
   if server_health; then echo "server: up"; else echo "server: down"; fi
   echo "host: $(scutil --get LocalHostName 2>/dev/null || hostname).local"
   echo "free RAM: $(free_ram_mb)MB"
 }
-cmd_serve_stop() { server_stop; }
+cmd_serve_stop() {
+  resolve_backend "$CFG_BACKEND" || [[ -n "$BACKEND" ]] || die "$RESOLVE_ERR"
+  backend stop
+}
 
-[[ $# -ge 1 ]] || usage
-SUBCMD="$1"; shift
-for arg in "$@"; do
-  case "$arg" in
-    --dry-run)  DRY_RUN=1 ;;
-    --relaunch) RELAUNCH=1 ;;
-    *) usage ;;
+main() {
+  [[ $# -ge 1 ]] || usage
+  local sub="$1"; shift
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      --dry-run)  DRY_RUN=1 ;;
+      --relaunch) RELAUNCH=1 ;;
+      *) usage ;;
+    esac
+  done
+
+  case "$sub" in
+    on)         cmd_on ;;
+    off)        cmd_off ;;
+    status)     cmd_status ;;
+    serve-stop) cmd_serve_stop ;;
+    *)          usage ;;
   esac
-done
+}
 
-case "$SUBCMD" in
-  on)         cmd_on ;;
-  off)        cmd_off ;;
-  status)     cmd_status ;;
-  serve-stop) cmd_serve_stop ;;
-  *)          usage ;;
-esac
+# tests source this file to call single functions; only dispatch when executed
+[[ "${BASH_SOURCE[0]}" != "$0" ]] || main "$@"
