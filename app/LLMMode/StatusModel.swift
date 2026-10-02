@@ -5,6 +5,7 @@ final class StatusModel: ObservableObject {
     @Published var serverUp = false
     @Published var freeRAM = "…"
     @Published var model = "…"
+    @Published var backend = "…"
     @Published var host = "…"
     @Published var busy = false
 
@@ -39,6 +40,7 @@ final class StatusModel: ObservableObject {
             case "server":   serverUp = (parts[1] == "up")
             case "free RAM": freeRAM = parts[1]
             case "model":    model = parts[1]
+            case "backend":  backend = parts[1]
             case "host":     host = parts[1]
             default: break
             }

@@ -13,7 +13,7 @@ struct LLMModeApp: App {
 
     var body: some Scene {
         MenuBarExtra("LLM", systemImage: status.serverUp ? "brain.fill" : "brain") {
-            Text("\(status.model) — \(status.serverUp ? "up" : "down")")
+            Text("\(status.backend) · \(status.model) — \(status.serverUp ? "up" : "down")")
             Text("free RAM: \(status.freeRAM)")
             Text("host: \(status.host)")
             Divider()
