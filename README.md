@@ -4,14 +4,14 @@
 
 **Turn a spare Mac into a local LLM coding server with one command, and get it back with another.**
 
-Quits your apps, parks background services, raises the GPU memory limit, starts
+Parks background services (and, if you opt in, quits your apps), raises the GPU memory limit, starts
 your local LLM server (LM Studio, Ollama, llama.cpp or MLX), and serves the model
 to your other Mac over an SSH tunnel. `llm-mode off` puts everything back.
 
 ![macOS 14+](https://img.shields.io/badge/macOS-14+-black?style=flat-square&logo=apple)
 ![Apple Silicon](https://img.shields.io/badge/Apple_Silicon-required-555?style=flat-square&logo=apple)
 ![Bash](https://img.shields.io/badge/core-bash-4EAA25?style=flat-square&logo=gnubash&logoColor=white)
-![Tests 61](https://img.shields.io/badge/bats_tests-61-success?style=flat-square)
+![Tests 84](https://img.shields.io/badge/bats_tests-84-success?style=flat-square)
 ![License MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)
 
 <!-- Read the story: [TITLE](MEDIUM_URL) -->
@@ -58,15 +58,15 @@ reads those notes back and undoes each step.
 > On the laptop, one script opens the tunnel and waits until the API responds.
 > Editors then use `localhost:1234` as if the model were running on the laptop.
 
-There's also a menu bar app (`LLMMode.app`) with **ON / OFF / Refresh**, model
-name, server up/down, free RAM and hostname. It runs the same CLI.
+There's also a menu bar app (`LLMMode.app`) with a live panel and an on/off
+switch. It runs the same CLI.
 
 ## What `on` does
 
 | # | Step | How |
 |---|------|-----|
 | 1 | **Snapshot** | Running GUI apps, enabled user launch agents, current `iogpu.wired_limit_mb` and the active backend go to `~/.llm-mode/state.json`, *before anything changes* |
-| 2 | **Quit apps** | AppleScript `quit`, then `kill -9` for anything still alive after 10s |
+| 2 | **Quit apps** | Off by default. With `CFG_QUIT_APPS=1`: AppleScript `quit`, then `kill -9` for anything still alive after 10s |
 | 3 | **Park agents** | `launchctl bootout` + `disable` user-installed agents (plist in `~/Library/LaunchAgents`) |
 | 4 | **Pause services** | Spotlight (`mdutil -a -i off`), Time Machine (`tmutil disable`), `bird` / `cloudd` / `photoanalysisd` |
 | 5 | **Raise GPU limit** | `sysctl iogpu.wired_limit_mb=<total RAM − 4 GB>` (20480 on a 24 GB machine); the reserve is configurable |
@@ -113,7 +113,7 @@ CFG_MODEL=Qwen3-Coder-30B   # label shown in status
 
 ## Safety
 
-The tool quits apps and disables system services, so most of the design is about
+The tool disables system services (and quits apps with `CFG_QUIT_APPS=1`), so most of the design is about
 being able to undo that:
 
 - **State is written before any change.** If `on` is interrupted halfway, `off`
@@ -141,11 +141,11 @@ being able to undo that:
 `on` never touches `sshd`, `loginwindow`, `WindowServer`, `mDNSResponder`,
 `notifyd`, `cfprefsd`, `systemstats`, `powerd`, `configd`, `distnoted`, Finder,
 or `Terminal` / `iTerm`. LM Studio is also kept when it's the active backend; with
-any other backend it gets quit like other apps, so its memory is freed. Add your own
+any other backend it gets quit like other apps when `CFG_QUIT_APPS=1`, so its memory is freed. Add your own
 with `CFG_WHITELIST_EXTRA` in `config` (see [Configuration](#configuration)).
 
 > [!WARNING]
-> **Run it from Terminal.app, iTerm2, or over SSH.** Other terminals (VS Code's
+> Only applies with `CFG_QUIT_APPS=1`. **Run it from Terminal.app, iTerm2, or over SSH.** Other terminals (VS Code's
 > integrated terminal, Warp, Ghostty, kitty…) are not whitelisted. `on` will quit
 > them like any other app, and the shell that ran the command goes with them. To use one
 > of them, add it to `CFG_WHITELIST_EXTRA`.
@@ -231,6 +231,17 @@ cd app && xcodegen && xcodebuild -scheme LLMMode -configuration Release build
 The app has no Dock icon, just a 🧠 in the menu bar. The icon is filled when the
 server is up. It calls `/usr/local/bin/llm-mode`, so install the CLI first.
 
+Click 🧠 for a live panel: GPU memory in use against the wired limit, uptime, a
+unified-memory bar (model / other apps / macOS reserve), and the command to
+connect from your laptop. The header switch turns LLM Mode on or off. If
+`CFG_QUIT_APPS` is on, turning it on first lists the apps that will quit;
+otherwise it starts directly. ⚙︎ opens Settings (General, Backend, Memory,
+Apps), which edits `~/.llm-mode/config` for you.
+
+The app's Swift unit tests run with:
+
+    cd app && xcodegen && xcodebuild test -scheme LLMMode -destination 'platform=macOS'
+
 **Signed release build** (maintainers): needs a *Developer ID Application*
 certificate in the keychain and a stored notarytool profile:
 
@@ -258,6 +269,7 @@ CFG_MODEL=             # empty = the backend's default (see Backends)
 CFG_PORT=1234
 CFG_RESERVE_MB=4096    # RAM left for macOS; wired limit = total RAM - this
 CFG_WIRED_MB=          # set to pin an exact wired limit instead
+CFG_QUIT_APPS=0        # 1 = quit visible apps on `on` (default leaves them running)
 CFG_WHITELIST_EXTRA=   # extra regex, e.g. 'Ghostty|com\.mitchellh\.ghostty'
 CFG_SERVER_ARGS=       # extra flags for llama.cpp / MLX, e.g. '-c 32768'
 CFG_SERVER_CMD=        # custom backend only
@@ -287,7 +299,7 @@ SSH session on your phone, and the Swift app has nothing of its own to test.
 ## Testing
 
 ```bash
-bats tests/   # 61 tests; changes to the system only ever run as --dry-run
+bats tests/   # 84 tests; changes to the system only ever run as --dry-run
 ```
 
 [`docs/manual-tests.md`](docs/manual-tests.md) lists the checks that need two real

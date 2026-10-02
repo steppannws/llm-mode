@@ -87,11 +87,12 @@ load helpers
 @test "LM Studio is whitelisted only when it is the active backend" {
   isolate_path; stub lms 'exit 0'; stub ollama 'exit 0'
   stub osascript 'if [[ "$*" == *"background only is false"* ]]; then echo "com.apple.Safari, ai.elementlabs.lmstudio"; else echo false; fi'
+  echo 'CFG_QUIT_APPS=1' > "$LLM_MODE_DIR/config"
   llm-mode on --dry-run
   run grep -q 'ai.elementlabs.lmstudio' "$LLM_MODE_DIR/state.json"
   [ "$status" -ne 0 ]
   rm "$LLM_MODE_DIR/state.json"
-  echo 'CFG_BACKEND=ollama' > "$LLM_MODE_DIR/config"
+  printf 'CFG_QUIT_APPS=1\nCFG_BACKEND=ollama\n' > "$LLM_MODE_DIR/config"
   llm-mode on --dry-run
   grep -q 'ai.elementlabs.lmstudio' "$LLM_MODE_DIR/state.json"
 }
