@@ -17,7 +17,7 @@ then serves the model to your laptop over SSH. `llm-mode off` puts everything ba
 
 <!-- Read the story: [TITLE](MEDIUM_URL) -->
 
-<img src="docs/images/hero.png" width="100%" alt="llm-mode on --dry-run in the terminal, next to the menu bar panel showing GPU memory, uptime and unified memory">
+<img src="docs/images/demo.gif" width="100%" alt="llm-mode on --dry-run and off --dry-run in the terminal, next to the menu bar panel showing GPU memory, uptime and unified memory">
 
 </div>
 
@@ -243,6 +243,14 @@ git clone https://github.com/steppannws/llm-mode.git && cd llm-mode
 - symlinks `bin/llm-mode` → `/usr/local/bin/llm-mode`
 - installs the scoped sudoers grant at `/etc/sudoers.d/llm-mode`, validated first
 - enables Remote Login (`systemsetup -setremotelogin on`) so the client can SSH in
+
+Or with Homebrew:
+
+```bash
+brew install steppannws/tap/llm-mode
+$(brew --prefix)/opt/llm-mode/libexec/install.sh   # same one-time setup as above
+brew install --cask steppannws/tap/llmmode         # optional: menu bar app
+```
 
 Optional: get the menu bar app from [Releases](https://github.com/steppannws/llm-mode/releases/latest).
 Unzip it and move `LLMMode.app` to `/Applications`. It's signed and notarized, so it opens
