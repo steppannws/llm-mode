@@ -10,6 +10,8 @@ targets:
       path: LLMMode/Info.plist
       properties:
         LSUIElement: true   # menu bar only, no Dock icon
+        CFBundleShortVersionString: "1.0.0"
+        CFBundleVersion: "2"
     scheme:
       testTargets: [LLMModeTests]
   LLMModeTests:
