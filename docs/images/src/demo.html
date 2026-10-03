@@ -1,0 +1,41 @@
+<!doctype html>
+<!-- Layers for docs/images/demo.gif, same layout as hero.html.
+     demo.html?layer=bg  stage + empty terminal slot (the recording goes on top)
+     demo.html?layer=fg  menu bar panel only, on transparent (goes over the recording)
+     Rendered and composed by demo.sh. -->
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; background: transparent; }
+  .stage {
+    position: relative; width: 1100px; height: 540px; border-radius: 24px; overflow: hidden;
+    background:
+      radial-gradient(460px 360px at 900px 330px, rgba(255,90,26,.16), transparent 70%),
+      radial-gradient(800px 260px at 50% -100px, rgba(255,255,255,.07), transparent 70%),
+      #0b0b0c;
+  }
+  .stage::before {
+    content: ""; position: absolute; inset: 0; opacity: .22; mix-blend-mode: overlay; pointer-events: none; z-index: 2;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+  .stage::after {
+    content: ""; position: absolute; inset: 0; border-radius: 22px; pointer-events: none; z-index: 3;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.08), inset 0 0 0 1px rgba(255,255,255,.06);
+  }
+  .term {
+    position: absolute; left: 44px; top: 48px; width: 760px; height: 434px; border-radius: 11px;
+    background: #141416;
+    box-shadow: 0 30px 70px rgba(0,0,0,.5), 0 0 0 1px rgba(255,255,255,.1);
+  }
+  .panel {
+    position: absolute; left: 742px; top: 168px; width: 306px; border-radius: 14px;
+    box-shadow: 0 30px 70px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.08);
+  }
+  .fg { position: relative; width: 1100px; height: 540px; }
+</style>
+<div id="root"></div>
+<script>
+  const fg = new URLSearchParams(location.search).get('layer') === 'fg';
+  document.getElementById('root').innerHTML = fg
+    ? '<div class="fg"><img class="panel" src="../app-panel.png" alt=""></div>'
+    : '<div class="stage"><div class="term"></div></div>';
+</script>
