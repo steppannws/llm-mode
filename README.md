@@ -1,26 +1,44 @@
 <div align="center">
 
-<img src="docs/images/logo.svg" width="96" alt="">
+<img src="docs/images/banner.png" width="100%" alt="llm-mode: turn a spare Mac into a local LLM coding server">
 
-# llm-mode
+<br>
 
-**Turn a spare Mac into a local LLM coding server with one command, and get it back with another.**
+Parks background services, raises the GPU memory limit and starts LM Studio, Ollama, llama.cpp or MLX,<br>
+then serves the model to your laptop over SSH. `llm-mode off` puts everything back.
 
-Parks background services (and, if you opt in, quits your apps), raises the GPU memory limit, starts
-your local LLM server (LM Studio, Ollama, llama.cpp or MLX), and serves the model
-to your other Mac over an SSH tunnel. `llm-mode off` puts everything back.
+![macOS 14+](https://img.shields.io/badge/macOS-14+-2a2a2e?style=flat-square&labelColor=0b0b0c&color=2a2a2e&logo=apple)
+![Apple Silicon](https://img.shields.io/badge/Apple_Silicon-required-2a2a2e?style=flat-square&labelColor=0b0b0c&color=2a2a2e&logo=apple)
+![Bash](https://img.shields.io/badge/core-bash-2a2a2e?style=flat-square&labelColor=0b0b0c&color=2a2a2e&logo=gnubash&logoColor=white)
+![Tests 84](https://img.shields.io/badge/bats_tests-84_passing-ff5a1a?style=flat-square&labelColor=0b0b0c)
+![License MIT](https://img.shields.io/badge/license-MIT-2a2a2e?style=flat-square&labelColor=0b0b0c&color=2a2a2e)
 
-![macOS 14+](https://img.shields.io/badge/macOS-14+-black?style=flat-square&logo=apple)
-![Apple Silicon](https://img.shields.io/badge/Apple_Silicon-required-555?style=flat-square&logo=apple)
-![Bash](https://img.shields.io/badge/core-bash-4EAA25?style=flat-square&logo=gnubash&logoColor=white)
-![Tests 84](https://img.shields.io/badge/bats_tests-84-success?style=flat-square)
-![License MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)
+[Quick start](#quick-start) · [How it works](#what-on-does) · [Menu bar app](#menu-bar-app) · [Backends](#backends) · [Safety](#safety) · [Configuration](#configuration)
 
 <!-- Read the story: [TITLE](MEDIUM_URL) -->
 
+<img src="docs/images/hero.png" width="100%" alt="llm-mode on --dry-run in the terminal, next to the menu bar panel showing GPU memory, uptime and unified memory">
+
 </div>
 
----
+## Quick start
+
+On the **server** Mac (the one with the RAM):
+
+```bash
+git clone https://github.com/steppannws/llm-mode.git && cd llm-mode
+./install.sh              # CLI + scoped sudo + Remote Login; asks for your password once
+llm-mode on --dry-run     # see exactly what it would touch
+llm-mode on               # free memory, start the server, load the model
+```
+
+On your **laptop**:
+
+```bash
+client/client-connect.sh you@server.local    # SSH tunnel → http://localhost:1234/v1
+```
+
+Point Zed, Continue, Cline or aider at `http://localhost:1234/v1`. When you're done, `llm-mode off` on the server.
 
 ## Why
 
@@ -44,25 +62,6 @@ reads those notes back and undoes each step.
 └────────────────────────────────┘           └────────────────────────────────┘
 ```
 
-## What it looks like
-
-<div align="center">
-<img src="docs/images/on-dry-run.png" width="680" alt="llm-mode on --dry-run: every app, launch agent, service and sysctl it would touch">
-</div>
-
-> Run `--dry-run` first. It prints every command `on` would execute, so you can
-> check what it plans to close before anything is closed.
-
-<div align="center">
-<img src="docs/images/client-connect.png" width="680" alt="client-connect.sh: SSH tunnel to the server's OpenAI-compatible API">
-</div>
-
-> On the laptop, one script opens the tunnel and waits until the API responds.
-> Editors then use `localhost:1234` as if the model were running on the laptop.
-
-There's also a menu bar app (`LLMMode.app`) with a live panel and an on/off
-switch. It runs the same CLI.
-
 ## What `on` does
 
 | # | Step | How |
@@ -77,6 +76,74 @@ switch. It runs the same CLI.
 `off` goes through `state.json` in reverse: stops the server it started (even if you changed backend in config since), restores the old
 wired limit, re-enables and restarts agents, turns Spotlight and Time Machine back
 on, and with `--relaunch` reopens the apps it quit.
+
+> Run `--dry-run` first. It prints every command `on` would execute, so you can
+> check what it plans to close before anything is closed.
+
+<div align="center">
+<img src="docs/images/client-connect.png" width="680" alt="client-connect.sh: SSH tunnel to the server's OpenAI-compatible API">
+</div>
+
+> On the laptop, one script opens the tunnel and waits until the API responds.
+> Editors then use `localhost:1234` as if the model were running on the laptop.
+
+## Menu bar app
+
+<img src="docs/images/app-panel.png" width="306" align="right" alt="Menu bar panel: GPU memory, uptime, unified-memory bar and client connect command">
+
+The app has no Dock icon, just a laptop icon in the menu bar. The icon is filled when the
+server is up. It calls `/usr/local/bin/llm-mode`, so install the CLI first.
+
+Click it for a live panel: GPU memory in use against the wired limit, uptime, a
+unified-memory bar (model / other apps / macOS reserve), and the command to
+connect from your laptop. The header switch turns LLM Mode on or off. If
+`CFG_QUIT_APPS` is on, turning it on first lists the apps that will quit;
+otherwise it starts directly. ⚙︎ opens Settings (General, Backend, Memory,
+Apps), which edits `~/.llm-mode/config` for you.
+
+Download the signed build from [Releases](https://github.com/steppannws/llm-mode/releases/latest),
+or build it from source (below).
+
+<br clear="right">
+
+<details>
+<summary><b>Settings window</b> (General, Backend, Memory, Apps)</summary>
+
+<table>
+  <tr>
+    <td><img src="docs/images/settings-general.png" width="400" alt="Settings, General: launch at login, confirm before turning on, reopen apps"></td>
+    <td><img src="docs/images/settings-backend.png" width="400" alt="Settings, Backend: backend, model, port, extra server args, start timeout"></td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/settings-memory.png" width="400" alt="Settings, Memory: GPU memory limit and macOS reserve"></td>
+    <td><img src="docs/images/settings-apps.png" width="400" alt="Settings, Apps: quit other apps, always kept running, your apps"></td>
+  </tr>
+</table>
+
+</details>
+
+<details>
+<summary><b>Build from source, tests and signed releases</b></summary>
+
+```bash
+cd app && xcodegen && xcodebuild -scheme LLMMode -configuration Release build
+```
+
+`LLMMode.xcodeproj` is generated and git-ignored, so `xcodegen` is required.
+The app's Swift unit tests run with:
+
+    cd app && xcodegen && xcodebuild test -scheme LLMMode -destination 'platform=macOS'
+
+**Signed release build** (maintainers): needs a *Developer ID Application*
+certificate in the keychain and a stored notarytool profile:
+
+```bash
+xcrun notarytool store-credentials llm-mode-notary --apple-id <you> --team-id <TEAMID>
+scripts/release.sh                  # build, sign, notarize, staple → build/LLMMode-<version>.zip
+scripts/release.sh --no-notarize    # build + sign only
+```
+
+</details>
 
 ## Backends
 
@@ -220,52 +287,6 @@ Ctrl-C. It exits early if `ssh` fails.
 - **Zed:** custom OpenAI-compatible provider, base URL `http://localhost:1234/v1`
 - **aider:** `aider --openai-api-base http://localhost:1234/v1 --openai-api-key local`
 
-### Menu bar app
-
-Download the signed build from [Releases](https://github.com/steppannws/llm-mode/releases/latest),
-or build it yourself:
-
-```bash
-cd app && xcodegen && xcodebuild -scheme LLMMode -configuration Release build
-```
-
-`LLMMode.xcodeproj` is generated and git-ignored, so `xcodegen` is required.
-The app has no Dock icon, just a laptop icon in the menu bar. The icon is filled when the
-server is up. It calls `/usr/local/bin/llm-mode`, so install the CLI first.
-
-Click it for a live panel: GPU memory in use against the wired limit, uptime, a
-unified-memory bar (model / other apps / macOS reserve), and the command to
-connect from your laptop. The header switch turns LLM Mode on or off. If
-`CFG_QUIT_APPS` is on, turning it on first lists the apps that will quit;
-otherwise it starts directly. ⚙︎ opens Settings (General, Backend, Memory,
-Apps), which edits `~/.llm-mode/config` for you.
-
-<img src="docs/images/app-panel.png" width="306" alt="Menu bar panel: GPU memory, uptime, unified-memory bar and client connect command">
-
-<table>
-  <tr>
-    <td><img src="docs/images/settings-general.png" width="400" alt="Settings, General: launch at login, confirm before turning on, reopen apps"></td>
-    <td><img src="docs/images/settings-backend.png" width="400" alt="Settings, Backend: backend, model, port, extra server args, start timeout"></td>
-  </tr>
-  <tr>
-    <td><img src="docs/images/settings-memory.png" width="400" alt="Settings, Memory: GPU memory limit and macOS reserve"></td>
-    <td><img src="docs/images/settings-apps.png" width="400" alt="Settings, Apps: quit other apps, always kept running, your apps"></td>
-  </tr>
-</table>
-
-The app's Swift unit tests run with:
-
-    cd app && xcodegen && xcodebuild test -scheme LLMMode -destination 'platform=macOS'
-
-**Signed release build** (maintainers): needs a *Developer ID Application*
-certificate in the keychain and a stored notarytool profile:
-
-```bash
-xcrun notarytool store-credentials llm-mode-notary --apple-id <you> --team-id <TEAMID>
-scripts/release.sh                  # build, sign, notarize, staple → build/LLMMode-<version>.zip
-scripts/release.sh --no-notarize    # build + sign only
-```
-
 ## Configuration
 
 Everything lives in `~/.llm-mode/`:
@@ -321,15 +342,6 @@ bats tests/   # 84 tests; changes to the system only ever run as --dry-run
 Macs: RAM actually freed, agents actually restored, reboot mid-`on`, SSH-only
 session. The automated suite can't safely run these.
 
-## Roadmap
-
-- [x] Detect RAM and pick `CFG_WIRED_MB` automatically
-- [x] Better "free RAM" metric (count inactive + speculative, not only `Pages free`)
-- [x] User-editable whitelist in `config`
-- [x] Signed + notarized menu bar app build
-- [x] Linux/Windows client script
-- [x] Ollama, llama.cpp, MLX and custom backends
-
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE). Use it, modify it, ship it in your own projects, commercial or not. Just keep the copyright notice.
