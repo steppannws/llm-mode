@@ -36,7 +36,7 @@ struct PopoverView: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("🧠 llm-mode").font(.headline)
+                    Label("llm-mode", image: "MenuOn").font(.headline)
                     Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer()

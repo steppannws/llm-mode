@@ -15,8 +15,11 @@ struct LLMModeApp: App {
         MenuBarExtra {
             PopoverView().environmentObject(status)
         } label: {
-            Image(systemName: status.busy ? "ellipsis.circle"
-                              : status.status?.serverUp == true ? "brain.fill" : "brain")
+            if status.busy {
+                Image(systemName: "ellipsis.circle")
+            } else {
+                Image(status.status?.serverUp == true ? "MenuOn" : "MenuOff")
+            }
         }
         .menuBarExtraStyle(.window)
 

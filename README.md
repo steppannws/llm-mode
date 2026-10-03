@@ -1,6 +1,8 @@
 <div align="center">
 
-# 🧠 llm-mode
+<img src="docs/images/logo.svg" width="96" alt="">
+
+# llm-mode
 
 **Turn a spare Mac into a local LLM coding server with one command, and get it back with another.**
 
@@ -228,15 +230,28 @@ cd app && xcodegen && xcodebuild -scheme LLMMode -configuration Release build
 ```
 
 `LLMMode.xcodeproj` is generated and git-ignored, so `xcodegen` is required.
-The app has no Dock icon, just a 🧠 in the menu bar. The icon is filled when the
+The app has no Dock icon, just a laptop icon in the menu bar. The icon is filled when the
 server is up. It calls `/usr/local/bin/llm-mode`, so install the CLI first.
 
-Click 🧠 for a live panel: GPU memory in use against the wired limit, uptime, a
+Click it for a live panel: GPU memory in use against the wired limit, uptime, a
 unified-memory bar (model / other apps / macOS reserve), and the command to
 connect from your laptop. The header switch turns LLM Mode on or off. If
 `CFG_QUIT_APPS` is on, turning it on first lists the apps that will quit;
 otherwise it starts directly. ⚙︎ opens Settings (General, Backend, Memory,
 Apps), which edits `~/.llm-mode/config` for you.
+
+<img src="docs/images/app-panel.png" width="306" alt="Menu bar panel: GPU memory, uptime, unified-memory bar and client connect command">
+
+<table>
+  <tr>
+    <td><img src="docs/images/settings-general.png" width="400" alt="Settings, General: launch at login, confirm before turning on, reopen apps"></td>
+    <td><img src="docs/images/settings-backend.png" width="400" alt="Settings, Backend: backend, model, port, extra server args, start timeout"></td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/settings-memory.png" width="400" alt="Settings, Memory: GPU memory limit and macOS reserve"></td>
+    <td><img src="docs/images/settings-apps.png" width="400" alt="Settings, Apps: quit other apps, always kept running, your apps"></td>
+  </tr>
+</table>
 
 The app's Swift unit tests run with:
 
